@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, Suspense } from "react"
 import { useNavigate, useParams } from "@tanstack/react-router"
-import { Plus, FolderOpen, Trash2, FolderPlus, GitBranch, Bot } from "lucide-react"
+import { Plus, FolderOpen, Trash2, FolderPlus, GitBranch, Bot, ChevronLeft, ChevronRight } from "lucide-react"
 import { open } from "@tauri-apps/plugin-dialog"
 import { readDir, exists } from "@tauri-apps/plugin-fs"
 import { useSuspenseQuery, useQuery, useQueryClient } from "@tanstack/react-query"
@@ -26,12 +26,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import {
-  ContextMenu,
-  ContextMenuContent,
-  ContextMenuItem,
-  ContextMenuTrigger,
-} from "@/components/ui/context-menu"
+import { ConfirmationDialog } from "@/components/confirmation-dialog"
 import {
   projectsQueryOptions,
   projectQueryOptions,
@@ -42,6 +37,7 @@ import {
   useDeleteProject,
   useUpdateProjectSettings,
 } from "@/lib/queries"
+import { useTerminalUIStore } from "@/stores/terminal-ui-store"
 import type { ProjectSummary } from "@/lib/types"
 
 export function ProjectSidebar() {
@@ -53,10 +49,12 @@ export function ProjectSidebar() {
 }
 
 function ProjectSidebarSkeleton() {
+  const { sidebarCollapsed } = useTerminalUIStore()
+
   return (
-    <div className="w-52 border-r border-border flex flex-col bg-background">
-      <div className="flex items-center justify-between px-4 py-3 border-b border-border">
-        <span className="font-semibold text-lg">ada</span>
+    <div className={`${sidebarCollapsed ? "w-12" : "w-52"} border-r border-border flex flex-col bg-background transition-all duration-200`}>
+      <div className="flex items-center justify-between px-3 py-3 border-b border-border">
+        {!sidebarCollapsed && <span className="font-semibold text-lg">ada</span>}
       </div>
       <div className="flex-1 flex items-center justify-center">
         <div className="animate-spin rounded-full border-2 border-muted border-t-primary h-6 w-6" />
@@ -77,7 +75,14 @@ function ProjectSidebarContent() {
   const deleteProjectMutation = useDeleteProject()
   const updateSettingsMutation = useUpdateProjectSettings()
 
+  const { sidebarCollapsed, setSidebarCollapsed } = useTerminalUIStore()
+
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false)
+  const [deleteConfirmation, setDeleteConfirmation] = useState<{ open: boolean; projectId: string; projectName: string }>({
+    open: false,
+    projectId: "",
+    projectName: "",
+  })
 
   const handleSelectProject = (projectId: string) => {
     navigate({ to: "/project/$projectId", params: { projectId } })
@@ -96,18 +101,45 @@ function ProjectSidebarContent() {
     }
   }
 
+  const handleDeleteClick = (project: ProjectSummary, shiftKey: boolean) => {
+    if (shiftKey) {
+      // Shift+click bypasses confirmation
+      handleDeleteProject(project.id)
+    } else {
+      // Show confirmation dialog
+      setDeleteConfirmation({
+        open: true,
+        projectId: project.id,
+        projectName: project.name,
+      })
+    }
+  }
+
+  const confirmDelete = () => {
+    handleDeleteProject(deleteConfirmation.projectId)
+    setDeleteConfirmation({ open: false, projectId: "", projectName: "" })
+  }
+
+  const cancelDelete = () => {
+    setDeleteConfirmation({ open: false, projectId: "", projectName: "" })
+  }
+
   return (
-    <div className="w-52 border-r border-border flex flex-col bg-background">
+    <div className={`${sidebarCollapsed ? "w-12" : "w-52"} border-r border-border flex flex-col bg-background transition-all duration-200`}>
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-border">
-        <span className="font-semibold text-lg">ada</span>
+      <div className="flex items-center justify-between px-3 py-3 border-b border-border">
+        {!sidebarCollapsed && <span className="font-semibold text-lg">ada</span>}
         <Button
           variant="ghost"
-          size="sm"
-          className="h-7 text-xs"
-          onClick={() => setIsCreateDialogOpen(true)}
+          size="icon"
+          className="h-7 w-7"
+          onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
         >
-          new project <Plus className="ml-1 h-3 w-3" />
+          {sidebarCollapsed ? (
+            <ChevronRight className="h-4 w-4" />
+          ) : (
+            <ChevronLeft className="h-4 w-4" />
+          )}
         </Button>
       </div>
 
@@ -115,11 +147,16 @@ function ProjectSidebarContent() {
       <ScrollArea className="flex-1">
         <div className="py-1">
           {projects.length === 0 ? (
-            <div className="px-4 py-8 text-center text-sm text-muted-foreground">
-              <p className="mb-3">No projects yet</p>
-              <Button variant="outline" size="sm" onClick={() => setIsCreateDialogOpen(true)}>
-                <Plus className="mr-2 h-3 w-3" />
-                Add Project
+            <div className={`${sidebarCollapsed ? "px-2" : "px-4"} py-8 text-center text-sm text-muted-foreground`}>
+              {!sidebarCollapsed && <p className="mb-3">No projects yet</p>}
+              <Button
+                variant="outline"
+                size={sidebarCollapsed ? "icon" : "sm"}
+                onClick={() => setIsCreateDialogOpen(true)}
+                className={sidebarCollapsed ? "h-8 w-8" : ""}
+              >
+                <Plus className={sidebarCollapsed ? "h-4 w-4" : "mr-2 h-3 w-3"} />
+                {!sidebarCollapsed && "Add Project"}
               </Button>
             </div>
           ) : (
@@ -128,14 +165,41 @@ function ProjectSidebarContent() {
                 key={project.id}
                 project={project}
                 isSelected={project.id === currentProjectId}
+                isCollapsed={sidebarCollapsed}
                 onSelect={() => handleSelectProject(project.id)}
                 onHover={() => handleProjectHover(project.id)}
-                onDelete={() => handleDeleteProject(project.id)}
+                onDelete={(shiftKey) => handleDeleteClick(project, shiftKey)}
               />
             ))
           )}
         </div>
       </ScrollArea>
+
+      {/* Add Project Button - Footer */}
+      {projects.length > 0 && (
+        <div className={`border-t border-border ${sidebarCollapsed ? "p-2" : "p-3"}`}>
+          <Button
+            variant="ghost"
+            size={sidebarCollapsed ? "icon" : "sm"}
+            className={`${sidebarCollapsed ? "h-8 w-8" : "w-full justify-start"}`}
+            onClick={() => setIsCreateDialogOpen(true)}
+          >
+            <Plus className={sidebarCollapsed ? "h-4 w-4" : "mr-2 h-3 w-3"} />
+            {!sidebarCollapsed && "new project"}
+          </Button>
+        </div>
+      )}
+
+      {/* Delete Confirmation Dialog */}
+      <ConfirmationDialog
+        open={deleteConfirmation.open}
+        title="Delete Project"
+        description={`Are you sure you want to delete "${deleteConfirmation.projectName}"? This will remove it from Ada but won't delete any files on disk.`}
+        confirmText="Delete"
+        variant="destructive"
+        onConfirm={confirmDelete}
+        onCancel={cancelDelete}
+      />
 
       {/* Create Project Dialog */}
       <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
@@ -177,38 +241,54 @@ function ProjectSidebarContent() {
 interface ProjectItemProps {
   project: ProjectSummary
   isSelected: boolean
+  isCollapsed: boolean
   onSelect: () => void
   onHover: () => void
-  onDelete: () => void
+  onDelete: (shiftKey: boolean) => void
 }
 
-function ProjectItem({ project, isSelected, onSelect, onHover, onDelete }: ProjectItemProps) {
+function ProjectItem({ project, isSelected, isCollapsed, onSelect, onHover, onDelete }: ProjectItemProps) {
+  if (isCollapsed) {
+    return (
+      <button
+        onClick={onSelect}
+        onMouseEnter={onHover}
+        className={`group w-full flex items-center justify-center py-2 text-sm transition-colors border-b border-border/50 hover:bg-accent/50 ${
+          isSelected ? "bg-accent" : ""
+        }`}
+        title={project.name}
+      >
+        <span className="w-6 h-6 rounded bg-muted flex items-center justify-center text-xs font-medium">
+          {project.name.charAt(0).toUpperCase()}
+        </span>
+      </button>
+    )
+  }
+
   return (
-    <ContextMenu>
-      <ContextMenuTrigger asChild>
-        <button
-          onClick={onSelect}
-          onMouseEnter={onHover}
-          className={`w-full text-left px-4 py-2 text-sm transition-colors border-b border-border/50 hover:bg-accent/50 ${
-            isSelected ? "bg-accent" : ""
-          }`}
-        >
-          {project.name}
-        </button>
-      </ContextMenuTrigger>
-      <ContextMenuContent>
-        <ContextMenuItem
-          className="text-destructive focus:text-destructive"
-          onClick={(e) => {
-            e.stopPropagation()
-            onDelete()
-          }}
-        >
-          <Trash2 className="mr-2 h-4 w-4" />
-          Delete Project
-        </ContextMenuItem>
-      </ContextMenuContent>
-    </ContextMenu>
+    <div
+      className={`group relative w-full flex items-center text-left px-4 py-2 text-sm transition-colors border-b border-border/50 hover:bg-accent/50 ${
+        isSelected ? "bg-accent" : ""
+      }`}
+    >
+      <button
+        onClick={onSelect}
+        onMouseEnter={onHover}
+        className="flex-1 text-left truncate"
+      >
+        {project.name}
+      </button>
+      <button
+        onClick={(e) => {
+          e.stopPropagation()
+          onDelete(e.shiftKey)
+        }}
+        className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded hover:bg-destructive/10 text-destructive"
+        title="Delete project (Shift+click to skip confirmation)"
+      >
+        <Trash2 className="h-3.5 w-3.5" />
+      </button>
+    </div>
   )
 }
 

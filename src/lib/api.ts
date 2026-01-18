@@ -16,6 +16,7 @@ export interface UpdateProjectSettingsRequest {
   default_client: string | null
   auto_create_worktree: boolean
   worktree_base_path: string | null
+  last_visited_terminal_id?: string | null
 }
 
 // Project API

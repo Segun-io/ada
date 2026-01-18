@@ -22,6 +22,8 @@ pub struct UpdateProjectSettingsRequest {
     pub default_client: Option<String>,
     pub auto_create_worktree: bool,
     pub worktree_base_path: Option<String>,
+    #[serde(default)]
+    pub last_visited_terminal_id: Option<String>,
 }
 
 /// Create a new project - creates directory and optionally initializes git
@@ -361,11 +363,14 @@ pub async fn update_project_settings(
         .get_mut(&request.project_id)
         .ok_or_else(|| Error::ProjectNotFound(request.project_id.clone()))?;
 
-    // Update settings
+    // Update settings, preserving last_visited_terminal_id if not provided
+    let last_visited = request.last_visited_terminal_id.or_else(|| project.settings.last_visited_terminal_id.clone());
+
     project.settings = ProjectSettings {
         default_client: request.default_client,
         auto_create_worktree: request.auto_create_worktree,
         worktree_base_path: request.worktree_base_path.map(PathBuf::from),
+        last_visited_terminal_id: last_visited,
     };
     project.updated_at = chrono::Utc::now();
 

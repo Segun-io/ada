@@ -16,6 +16,7 @@ export interface ProjectSettings {
   default_client: string | null
   auto_create_worktree: boolean
   worktree_base_path: string | null
+  last_visited_terminal_id: string | null
 }
 
 export interface ProjectSummary {
@@ -36,7 +37,7 @@ export interface CreateProjectRequest {
 
 // Terminal types
 export type TerminalStatus = "starting" | "running" | "stopped" | "error"
-export type AgentActivity = "idle" | "active" | "thinking"
+export type AgentActivity = "idle" | "running" | "waiting_for_user" | "done"
 export type TerminalMode = "main" | "folder" | "current_branch" | "worktree"
 
 export interface TerminalInfo {

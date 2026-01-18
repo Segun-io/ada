@@ -4,7 +4,7 @@ import { FitAddon } from "@xterm/addon-fit"
 import { WebLinksAddon } from "@xterm/addon-web-links"
 import { SearchAddon } from "@xterm/addon-search"
 import { listen } from "@tauri-apps/api/event"
-import { Search, X, ChevronUp, ChevronDown, RotateCcw, RefreshCw, XCircle } from "lucide-react"
+import { Search, X, ChevronUp, ChevronDown, RotateCcw, RefreshCw, XCircle, Home, FolderOpen, TreeDeciduous, Terminal as TerminalIcon } from "lucide-react"
 
 import { useTerminalUIStore } from "@/stores/terminal-ui-store"
 import { Button } from "@/components/ui/button"
@@ -16,11 +16,47 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import type { TerminalOutput, TerminalInfo, ClientSummary } from "@/lib/types"
+import { ConfirmationDialog } from "@/components/confirmation-dialog"
+import { cn } from "@/lib/utils"
+import type { TerminalOutput, TerminalInfo, ClientSummary, AgentActivity, TerminalMode } from "@/lib/types"
+
+// Get mode display info
+const getModeInfo = (mode: TerminalMode) => {
+  switch (mode) {
+    case "main":
+      return { icon: Home, color: "text-purple-400", bgColor: "bg-purple-500/20", label: "main" }
+    case "folder":
+      return { icon: FolderOpen, color: "text-orange-400", bgColor: "bg-orange-500/20", label: "folder" }
+    case "current_branch":
+      return { icon: TerminalIcon, color: "text-green-400", bgColor: "bg-green-500/20", label: "main" }
+    case "worktree":
+      return { icon: TreeDeciduous, color: "text-blue-400", bgColor: "bg-blue-500/20", label: "worktree" }
+    default:
+      return { icon: TerminalIcon, color: "text-muted-foreground", bgColor: "bg-muted", label: mode }
+  }
+}
+
+// Get border color based on activity
+const getActivityBorderClass = (activity: AgentActivity, status?: string) => {
+  if (status === "stopped") return "border-yellow-500/50"
+  switch (activity) {
+    case "running":
+      return "border-blue-500/50"
+    case "waiting_for_user":
+      return "border-orange-500 animate-pulse"
+    case "done":
+      return "border-green-500/50"
+    case "idle":
+    default:
+      return "border-gray-500/50"
+  }
+}
 
 interface TerminalViewProps {
   terminalId: string
   terminal?: TerminalInfo
+  activity?: AgentActivity
+  currentBranch?: string
   clients?: ClientSummary[]
   onRestart?: () => void
   onSwitchAgent?: (clientId: string) => void
@@ -30,6 +66,8 @@ interface TerminalViewProps {
 export function TerminalView({
   terminalId,
   terminal,
+  activity = "idle",
+  currentBranch = "",
   clients = [],
   onRestart,
   onSwitchAgent,
@@ -47,8 +85,38 @@ export function TerminalView({
   const [searchQuery, setSearchQuery] = useState("")
   const [searchResultCount, setSearchResultCount] = useState<number | null>(null)
   const [selectedNewAgent, setSelectedNewAgent] = useState<string>("")
+  const [closeConfirmation, setCloseConfirmation] = useState(false)
 
   const isStopped = terminal?.status === "stopped"
+  const isMain = terminal?.is_main ?? false
+  const modeInfo = terminal ? getModeInfo(terminal.mode) : null
+  const ModeIcon = modeInfo?.icon ?? TerminalIcon
+
+  // Get context info for header
+  const getContextInfo = () => {
+    if (!terminal) return ""
+    switch (terminal.mode) {
+      case "main":
+      case "current_branch":
+        return terminal.branch || currentBranch || "main"
+      case "worktree":
+        // Show "branch → source" format for worktrees
+        return terminal.branch || "worktree"
+      case "folder":
+        return terminal.folder_path || "root"
+      default:
+        return ""
+    }
+  }
+
+  const handleClose = (e: React.MouseEvent) => {
+    if (e.shiftKey) {
+      // Shift+click bypasses confirmation
+      onClose?.()
+    } else {
+      setCloseConfirmation(true)
+    }
+  }
 
   // Initialize terminal
   useEffect(() => {
@@ -142,23 +210,6 @@ export function TerminalView({
     }
   }, [terminalId])
 
-  // Handle keyboard shortcut for search (Cmd/Ctrl + F)
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === "f") {
-        e.preventDefault()
-        setIsSearchOpen(true)
-        setTimeout(() => searchInputRef.current?.focus(), 0)
-      }
-      if (e.key === "Escape" && isSearchOpen) {
-        closeSearch()
-      }
-    }
-
-    window.addEventListener("keydown", handleKeyDown)
-    return () => window.removeEventListener("keydown", handleKeyDown)
-  }, [isSearchOpen])
-
   const handleSearch = useCallback((query: string) => {
     setSearchQuery(query)
     if (searchAddonRef.current && query) {
@@ -202,136 +253,215 @@ export function TerminalView({
     xtermRef.current?.focus()
   }, [])
 
+  // Handle keyboard shortcut for search (Cmd/Ctrl + F)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "f") {
+        e.preventDefault()
+        setIsSearchOpen(true)
+        setTimeout(() => searchInputRef.current?.focus(), 0)
+      }
+      if (e.key === "Escape" && isSearchOpen) {
+        closeSearch()
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown)
+    return () => window.removeEventListener("keydown", handleKeyDown)
+  }, [isSearchOpen, closeSearch])
+
   return (
-    <div className="terminal-container h-full w-full bg-[#1a1a1a] relative">
-      {/* Search Bar */}
-      {isSearchOpen && (
-        <div className="absolute top-2 right-2 z-10 flex items-center gap-1 bg-background border border-border rounded-md p-1 shadow-lg">
-          <Search className="h-4 w-4 text-muted-foreground ml-2" />
-          <Input
-            ref={searchInputRef}
-            value={searchQuery}
-            onChange={(e) => handleSearch(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.shiftKey ? findPrevious() : findNext()
-              }
-            }}
-            placeholder="Search..."
-            className="h-7 w-48 border-0 focus-visible:ring-0 focus-visible:ring-offset-0"
-          />
-          {searchResultCount !== null && (
-            <span className="text-xs text-muted-foreground px-1">
-              {searchResultCount === 0 ? "No results" : "Found"}
-            </span>
-          )}
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-6 w-6"
-            onClick={findPrevious}
-            disabled={!searchQuery}
-          >
-            <ChevronUp className="h-4 w-4" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-6 w-6"
-            onClick={findNext}
-            disabled={!searchQuery}
-          >
-            <ChevronDown className="h-4 w-4" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-6 w-6"
-            onClick={closeSearch}
-          >
-            <X className="h-4 w-4" />
-          </Button>
+    <div className={cn(
+      "terminal-container h-full w-full rounded-xl overflow-hidden flex flex-col border-2 transition-all duration-300",
+      getActivityBorderClass(activity, terminal?.status)
+    )}>
+      {/* Terminal Header */}
+      <div className="flex items-center justify-between px-3 py-1.5 bg-[#252525] border-b border-border/50">
+        {/* Left: Mode Badge */}
+        {modeInfo && (
+          <div className={cn(
+            "flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium",
+            modeInfo.bgColor,
+            modeInfo.color
+          )}>
+            <ModeIcon className="h-3 w-3" />
+            {modeInfo.label}
+          </div>
+        )}
+
+        {/* Center: Terminal Name + Context */}
+        <div className="flex-1 flex items-center justify-center gap-2 text-xs">
+          <span className="font-medium text-foreground">{terminal?.name || "Terminal"}</span>
+          <span className="text-muted-foreground">·</span>
+          <span className="text-muted-foreground">{getContextInfo()}</span>
         </div>
-      )}
 
-      {/* Stopped Overlay */}
-      {isStopped && (
-        <div className="absolute inset-0 z-20 bg-black/60 flex items-center justify-center backdrop-blur-sm">
-          <div className="bg-background border border-border rounded-xl p-6 max-w-sm w-full mx-4 space-y-4">
-            <div className="text-center">
-              <div className="h-12 w-12 rounded-full bg-yellow-500/20 flex items-center justify-center mx-auto mb-3">
-                <XCircle className="h-6 w-6 text-yellow-500" />
-              </div>
-              <h3 className="font-semibold text-lg">Agent Stopped</h3>
-              <p className="text-sm text-muted-foreground mt-1">
-                The agent process has exited. What would you like to do?
-              </p>
-            </div>
+        {/* Right: Close Button (hidden for main terminal) */}
+        {!isMain && onClose && (
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-6 w-6 text-muted-foreground hover:text-foreground"
+            onClick={handleClose}
+            title="Close terminal (Shift+click to skip confirmation)"
+          >
+            <X className="h-3.5 w-3.5" />
+          </Button>
+        )}
+        {isMain && <div className="w-6" />}
+      </div>
 
-            <div className="space-y-3">
-              {/* Restart with same agent */}
-              <Button
-                variant="default"
-                className="w-full"
-                onClick={onRestart}
-              >
-                <RotateCcw className="h-4 w-4 mr-2" />
-                Restart Agent
-              </Button>
+      {/* Terminal Content */}
+      <div className="flex-1 bg-[#1a1a1a] relative">
+        {/* Search Bar */}
+        {isSearchOpen && (
+          <div className="absolute top-2 right-2 z-10 flex items-center gap-1 bg-background border border-border rounded-md p-1 shadow-lg">
+            <Search className="h-4 w-4 text-muted-foreground ml-2" />
+            <Input
+              ref={searchInputRef}
+              value={searchQuery}
+              onChange={(e) => handleSearch(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  if (e.shiftKey) {
+                    findPrevious()
+                  } else {
+                    findNext()
+                  }
+                }
+              }}
+              placeholder="Search..."
+              className="h-7 w-48 border-0 focus-visible:ring-0 focus-visible:ring-offset-0"
+            />
+            {searchResultCount !== null && (
+              <span className="text-xs text-muted-foreground px-1">
+                {searchResultCount === 0 ? "No results" : "Found"}
+              </span>
+            )}
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6"
+              onClick={findPrevious}
+              disabled={!searchQuery}
+            >
+              <ChevronUp className="h-4 w-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6"
+              onClick={findNext}
+              disabled={!searchQuery}
+            >
+              <ChevronDown className="h-4 w-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6"
+              onClick={closeSearch}
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
+        )}
 
-              {/* Switch agent */}
-              {clients.length > 1 && onSwitchAgent && (
-                <div className="space-y-2">
-                  <div className="flex gap-2">
-                    <Select
-                      value={selectedNewAgent}
-                      onValueChange={setSelectedNewAgent}
-                    >
-                      <SelectTrigger className="flex-1">
-                        <SelectValue placeholder="Select different agent" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {clients
-                          .filter((c) => c.id !== terminal?.client_id)
-                          .map((client) => (
-                            <SelectItem key={client.id} value={client.id}>
-                              {client.name}
-                            </SelectItem>
-                          ))}
-                      </SelectContent>
-                    </Select>
-                    <Button
-                      variant="secondary"
-                      disabled={!selectedNewAgent}
-                      onClick={() => {
-                        if (selectedNewAgent) {
-                          onSwitchAgent(selectedNewAgent)
-                          setSelectedNewAgent("")
-                        }
-                      }}
-                    >
-                      <RefreshCw className="h-4 w-4" />
-                    </Button>
-                  </div>
+        {/* Stopped Overlay */}
+        {isStopped && (
+          <div className="absolute inset-0 z-20 bg-black/60 flex items-center justify-center backdrop-blur-sm">
+            <div className="bg-background border border-border rounded-xl p-6 max-w-sm w-full mx-4 space-y-4">
+              <div className="text-center">
+                <div className="h-12 w-12 rounded-full bg-yellow-500/20 flex items-center justify-center mx-auto mb-3">
+                  <XCircle className="h-6 w-6 text-yellow-500" />
                 </div>
-              )}
+                <h3 className="font-semibold text-lg">Agent Stopped</h3>
+                <p className="text-sm text-muted-foreground mt-1">
+                  The agent process has exited. What would you like to do?
+                </p>
+              </div>
 
-              {/* Close terminal */}
-              <Button
-                variant="outline"
-                className="w-full text-destructive hover:text-destructive"
-                onClick={onClose}
-              >
-                <X className="h-4 w-4 mr-2" />
-                Close Terminal
-              </Button>
+              <div className="space-y-3">
+                {/* Restart with same agent */}
+                <Button
+                  variant="default"
+                  className="w-full"
+                  onClick={onRestart}
+                >
+                  <RotateCcw className="h-4 w-4 mr-2" />
+                  Restart Agent
+                </Button>
+
+                {/* Switch agent */}
+                {clients.length > 1 && onSwitchAgent && (
+                  <div className="space-y-2">
+                    <div className="flex gap-2">
+                      <Select
+                        value={selectedNewAgent}
+                        onValueChange={setSelectedNewAgent}
+                      >
+                        <SelectTrigger className="flex-1">
+                          <SelectValue placeholder="Select different agent" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {clients
+                            .filter((c) => c.id !== terminal?.client_id)
+                            .map((client) => (
+                              <SelectItem key={client.id} value={client.id}>
+                                {client.name}
+                              </SelectItem>
+                            ))}
+                        </SelectContent>
+                      </Select>
+                      <Button
+                        variant="secondary"
+                        disabled={!selectedNewAgent}
+                        onClick={() => {
+                          if (selectedNewAgent) {
+                            onSwitchAgent(selectedNewAgent)
+                            setSelectedNewAgent("")
+                          }
+                        }}
+                      >
+                        <RefreshCw className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Close terminal (not for main) */}
+                {!isMain && (
+                  <Button
+                    variant="outline"
+                    className="w-full text-destructive hover:text-destructive"
+                    onClick={onClose}
+                  >
+                    <X className="h-4 w-4 mr-2" />
+                    Close Terminal
+                  </Button>
+                )}
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        )}
 
-      {/* Terminal */}
-      <div ref={terminalRef} className="h-full w-full" />
+        {/* Terminal */}
+        <div ref={terminalRef} className="h-full w-full" />
+      </div>
+
+      {/* Close Confirmation Dialog */}
+      <ConfirmationDialog
+        open={closeConfirmation}
+        title="Close Terminal"
+        description={`Are you sure you want to close "${terminal?.name || "this terminal"}"? The agent process will be terminated.`}
+        confirmText="Close"
+        variant="destructive"
+        onConfirm={() => {
+          setCloseConfirmation(false)
+          onClose?.()
+        }}
+        onCancel={() => setCloseConfirmation(false)}
+      />
     </div>
   )
 }

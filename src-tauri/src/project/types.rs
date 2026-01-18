@@ -25,6 +25,8 @@ pub struct ProjectSettings {
     pub default_client: Option<String>,
     pub auto_create_worktree: bool,
     pub worktree_base_path: Option<PathBuf>,
+    #[serde(default)]
+    pub last_visited_terminal_id: Option<String>,
 }
 
 impl AdaProject {

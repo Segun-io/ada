@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router"
-import { useEffect, useState, useRef } from "react"
-import { Plus, Terminal as TerminalIcon, Settings, Loader2, Home, FolderOpen, TreeDeciduous, RefreshCw } from "lucide-react"
+import { useEffect, useState, useRef, useCallback } from "react"
+import { Plus, Terminal as TerminalIcon, Settings, RefreshCw, Home, FolderOpen, TreeDeciduous } from "lucide-react"
 import { listen } from "@tauri-apps/api/event"
 import { useSuspenseQuery, useQueryClient } from "@tanstack/react-query"
 
@@ -136,9 +136,51 @@ function ProjectPage() {
     if (terminals.length > 0) {
       const terminalIds = terminals.map(t => t.id)
       const mainId = mainTerminal?.id ?? null
-      initializeTerminals(terminalIds, mainId)
+      const lastVisitedId = currentProject.settings.last_visited_terminal_id ?? null
+      initializeTerminals(terminalIds, mainId, lastVisitedId)
     }
-  }, [terminals, mainTerminal?.id, initializeTerminals])
+  }, [terminals, mainTerminal?.id, currentProject.settings.last_visited_terminal_id, initializeTerminals])
+
+  // Debounced persistence of last visited terminal
+  const lastVisitedRef = useRef<string | null>(null)
+  const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const persistLastVisitedTerminal = useCallback((terminalId: string | null) => {
+    if (terminalId === lastVisitedRef.current) return
+    lastVisitedRef.current = terminalId
+
+    // Clear existing timeout
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current)
+    }
+
+    // Debounce the save (1 second)
+    saveTimeoutRef.current = setTimeout(() => {
+      if (terminalId) {
+        updateProjectSettingsMutation.mutate({
+          project_id: projectId,
+          default_client: currentProject.settings.default_client,
+          auto_create_worktree: currentProject.settings.auto_create_worktree,
+          worktree_base_path: currentProject.settings.worktree_base_path,
+          last_visited_terminal_id: terminalId,
+        })
+      }
+    }, 1000)
+  }, [projectId, currentProject.settings, updateProjectSettingsMutation])
+
+  // Track active terminal changes for persistence
+  useEffect(() => {
+    persistLastVisitedTerminal(activeTerminalId)
+  }, [activeTerminalId, persistLastVisitedTerminal])
+
+  // Cleanup timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current)
+      }
+    }
+  }, [])
 
   // Auto-create main terminal when default_client is set and no main terminal exists
   useEffect(() => {
@@ -269,165 +311,71 @@ function ProjectPage() {
   }, [])
 
   const activeTerminal = terminals.find((t) => t.id === activeTerminalId)
-  const activeClientName = activeTerminal
-    ? clients.find((c) => c.id === activeTerminal.client_id)?.name || activeTerminal.client_id
-    : ""
   const activeActivity = activeTerminalId ? getActivity(activeTerminalId, activeTerminal?.status) : "idle"
-
-  // Get mode display info
-  const getModeInfo = (mode: TerminalMode) => {
-    switch (mode) {
-      case "main":
-        return { icon: Home, color: "text-purple-400", label: "main" }
-      case "folder":
-        return { icon: FolderOpen, color: "text-orange-400", label: "folder" }
-      case "current_branch":
-        return { icon: TerminalIcon, color: "text-green-400", label: "main" }
-      case "worktree":
-        return { icon: TreeDeciduous, color: "text-blue-400", label: "worktree" }
-      default:
-        return { icon: TerminalIcon, color: "text-muted-foreground", label: mode }
-    }
-  }
 
   return (
     <div className="flex h-full flex-col">
-      {/* Header */}
+      {/* Header - Simplified Layout */}
       <header className="flex items-center justify-between border-b border-border px-4 py-2">
-        <div className="flex items-center gap-2 text-sm">
-          <span className="font-semibold">{currentProject.name}:</span>
-          {activeTerminal ? (
-            <>
-              {/* Mode indicator */}
-              {(() => {
-                const modeInfo = getModeInfo(activeTerminal.mode)
-                const ModeIcon = modeInfo.icon
-                return (
-                  <span className={`flex items-center gap-1 ${modeInfo.color}`}>
-                    <ModeIcon className="h-3.5 w-3.5" />
-                    {modeInfo.label}
-                  </span>
-                )
-              })()}
-              <span className="text-muted-foreground">-</span>
-              <span className="text-muted-foreground">{activeTerminal.name}</span>
-              <span className="text-muted-foreground">-</span>
-              <span className="text-muted-foreground">
-                {activeTerminal.mode === "folder"
-                  ? activeTerminal.folder_path || "root"
-                  : activeTerminal.branch || currentBranch || "main"}
-              </span>
-              <span className="text-muted-foreground">-</span>
-              <span className="text-muted-foreground">{activeClientName}</span>
-              <span className="text-muted-foreground">|</span>
-              {/* Terminal Status */}
-              {activeTerminal.status === "stopped" ? (
-                <span className="flex items-center gap-1 text-yellow-500">
-                  <span className="h-2 w-2 rounded-full bg-yellow-500" />
-                  stopped
-                </span>
-              ) : activeTerminal.status === "running" ? (
-                <span className="flex items-center gap-1 text-green-500">
-                  <span className="h-2 w-2 rounded-full bg-green-500" />
-                  running
-                </span>
-              ) : (
-                <span className="flex items-center gap-1 text-muted-foreground">
-                  <span className="h-2 w-2 rounded-full bg-gray-500" />
-                  {activeTerminal.status}
-                </span>
-              )}
-              {/* Agent Activity (only show if running) */}
-              {activeTerminal.status === "running" && (
-                <>
-                  <span className="text-muted-foreground">|</span>
-                  {activeActivity === "thinking" ? (
-                    <span className="flex items-center gap-1 text-blue-400">
-                      <Loader2 className="h-3 w-3 animate-spin" />
-                      thinking
-                    </span>
-                  ) : activeActivity === "active" ? (
-                    <span className="flex items-center gap-1 text-green-400">
-                      <span className="h-2 w-2 rounded-full bg-green-400 animate-pulse" />
-                      active
-                    </span>
-                  ) : (
-                    <span className="flex items-center gap-1 text-muted-foreground">
-                      <span className="h-2 w-2 rounded-full bg-gray-500" />
-                      idle
-                    </span>
-                  )}
-                </>
-              )}
-            </>
-          ) : (
-            <span className="text-muted-foreground">No terminal selected</span>
-          )}
-        </div>
-
+        {/* Left: Project Name + Reload */}
         <div className="flex items-center gap-2">
+          <span className="font-semibold text-sm">{currentProject.name}</span>
           <Button
             variant="ghost"
             size="icon"
-            className="h-7 w-7"
+            className="h-6 w-6"
             onClick={handleRefreshProject}
             disabled={isRefreshing}
             title="Refresh project state"
           >
-            <RefreshCw className={`h-4 w-4 ${isRefreshing ? "animate-spin" : ""}`} />
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-7 text-xs"
-            onClick={handleNewTerminal}
-            disabled={isRefreshing}
-          >
-            new code terminal <Plus className="ml-1 h-3 w-3" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7"
-            onClick={() => setIsSettingsOpen(true)}
-          >
-            <Settings className="h-4 w-4" />
+            <RefreshCw className={`h-3.5 w-3.5 ${isRefreshing ? "animate-spin" : ""}`} />
           </Button>
         </div>
+
+        {/* Center: New Terminal CTA */}
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-7 text-xs"
+          onClick={handleNewTerminal}
+          disabled={isRefreshing}
+        >
+          new code terminal <Plus className="ml-1 h-3 w-3" />
+        </Button>
+
+        {/* Right: Settings */}
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-7 w-7"
+          onClick={() => setIsSettingsOpen(true)}
+        >
+          <Settings className="h-4 w-4" />
+        </Button>
       </header>
 
       {/* Main Terminal View */}
       <div className="flex-1 p-3 min-h-0">
-        <div
-          className={`h-full rounded-xl overflow-hidden bg-[#1a1a1a] transition-all duration-300 ${
-            activeTerminal?.status === "stopped"
-              ? "ring-2 ring-yellow-500/50"
-              : activeActivity === "thinking"
-              ? "ring-2 ring-blue-500/50 animate-pulse"
-              : activeActivity === "active"
-              ? "ring-2 ring-green-500/50"
-              : "border border-border"
-          }`}
-        >
-          {activeTerminal ? (
-            <TerminalView
-              terminalId={activeTerminal.id}
-              terminal={activeTerminal}
-              clients={clients.filter(c => c.installed)}
-              onRestart={() => handleRestartTerminal(activeTerminal.id)}
-              onSwitchAgent={(clientId) => handleSwitchAgent(activeTerminal.id, clientId)}
-              onClose={() => handleCloseTerminal(activeTerminal.id)}
-            />
-          ) : (
-            <div className="flex h-full items-center justify-center">
-              <div className="text-center text-muted-foreground">
-                <TerminalIcon className="h-12 w-12 mx-auto mb-4 opacity-30" />
-                <p className="text-sm">terminal</p>
-                <p className="text-xs mt-2">Select or create a terminal to get started</p>
-              </div>
+        {activeTerminal ? (
+          <TerminalView
+            terminalId={activeTerminal.id}
+            terminal={activeTerminal}
+            activity={activeActivity}
+            currentBranch={currentBranch}
+            clients={clients.filter(c => c.installed)}
+            onRestart={() => handleRestartTerminal(activeTerminal.id)}
+            onSwitchAgent={(clientId) => handleSwitchAgent(activeTerminal.id, clientId)}
+            onClose={() => handleCloseTerminal(activeTerminal.id)}
+          />
+        ) : (
+          <div className="h-full rounded-xl overflow-hidden bg-[#1a1a1a] border border-border flex items-center justify-center">
+            <div className="text-center text-muted-foreground">
+              <TerminalIcon className="h-12 w-12 mx-auto mb-4 opacity-30" />
+              <p className="text-sm">terminal</p>
+              <p className="text-xs mt-2">Select or create a terminal to get started</p>
             </div>
-          )}
-        </div>
+          </div>
+        )}
       </div>
 
       {/* Terminal Strip */}

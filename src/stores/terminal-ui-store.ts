@@ -14,10 +14,11 @@ interface TerminalUIState {
   activeTerminalId: string | null
   terminalOutputs: Record<string, string[]>
   terminalActivity: Record<string, TerminalActivityState>
+  sidebarCollapsed: boolean
 
   // Actions
   setActiveTerminal: (terminalId: string | null) => void
-  initializeTerminals: (terminalIds: string[], mainTerminalId: string | null) => void
+  initializeTerminals: (terminalIds: string[], mainTerminalId: string | null, lastVisitedTerminalId?: string | null) => void
   appendOutput: (terminalId: string, data: string) => void
   loadTerminalHistory: (terminalId: string) => Promise<void>
   writeToTerminal: (terminalId: string, data: string) => Promise<void>
@@ -25,38 +26,70 @@ interface TerminalUIState {
   clearTerminalOutput: (terminalId: string) => void
   removeTerminal: (terminalId: string, mainTerminalId: string | null, remainingTerminalIds: string[]) => void
   resetActivityToIdle: (terminalId: string) => void
+  setSidebarCollapsed: (collapsed: boolean) => void
 }
 
 // Helper to detect activity type from output
 function detectActivityFromOutput(data: string): AgentActivity {
-  // Check for thinking indicators (Claude-specific patterns)
-  if (
-    data.includes("Thinking") ||
-    data.includes("thinking...") ||
-    data.includes("⠋") ||
-    data.includes("⠙") ||
-    data.includes("⠹") ||
-    data.includes("⠸") ||
-    data.includes("⠼") ||
-    data.includes("⠴") ||
-    data.includes("⠦") ||
-    data.includes("⠧") ||
-    data.includes("⠇") ||
-    data.includes("⠏")
-  ) {
-    return "thinking"
+  // Check for waiting_for_user patterns (prompts requiring user input)
+  const waitingPatterns = [
+    "[Y/n]",
+    "[y/N]",
+    "(y/n)",
+    "continue?",
+    "Continue?",
+    "permission",
+    "Permission",
+    "Do you want to",
+    "Would you like",
+    "Should I",
+    "Proceed?",
+    "proceed?",
+    "approve",
+    "Approve",
+    "confirm",
+    "Confirm",
+    "Press Enter",
+    "press enter",
+  ]
+
+  for (const pattern of waitingPatterns) {
+    if (data.includes(pattern)) {
+      return "waiting_for_user"
+    }
   }
-  return "active"
+
+  // Check for done patterns
+  const donePatterns = [
+    "Task completed",
+    "task completed",
+    "Done!",
+    "Finished!",
+    "Complete!",
+    "Successfully completed",
+  ]
+
+  for (const pattern of donePatterns) {
+    if (data.includes(pattern)) {
+      return "done"
+    }
+  }
+
+  // Default to running for any active output
+  return "running"
 }
 
 export const useTerminalUIStore = create<TerminalUIState>((set, get) => ({
   activeTerminalId: null,
   terminalOutputs: {},
   terminalActivity: {},
+  sidebarCollapsed: false,
 
   setActiveTerminal: (terminalId) => set({ activeTerminalId: terminalId }),
 
-  initializeTerminals: (terminalIds, mainTerminalId) => {
+  setSidebarCollapsed: (collapsed) => set({ sidebarCollapsed: collapsed }),
+
+  initializeTerminals: (terminalIds, mainTerminalId, lastVisitedTerminalId) => {
     const activityState: Record<string, TerminalActivityState> = {}
     for (const id of terminalIds) {
       activityState[id] = {
@@ -66,10 +99,18 @@ export const useTerminalUIStore = create<TerminalUIState>((set, get) => ({
     }
 
     set((state) => {
-      // Set active terminal if none selected
+      // Set active terminal based on priority:
+      // 1. Keep current if valid
+      // 2. Use last visited if valid
+      // 3. Fall back to main terminal
+      // 4. Fall back to first terminal
       let activeId = state.activeTerminalId
       if (!activeId || !terminalIds.includes(activeId)) {
-        activeId = mainTerminalId ?? terminalIds[0] ?? null
+        if (lastVisitedTerminalId && terminalIds.includes(lastVisitedTerminalId)) {
+          activeId = lastVisitedTerminalId
+        } else {
+          activeId = mainTerminalId ?? terminalIds[0] ?? null
+        }
       }
 
       return {
