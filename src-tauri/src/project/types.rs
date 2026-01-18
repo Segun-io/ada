@@ -1,0 +1,85 @@
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+use chrono::{DateTime, Utc};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdaProject {
+    pub id: String,
+    pub name: String,
+    pub path: PathBuf,
+    pub description: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub terminal_ids: Vec<String>,
+    pub settings: ProjectSettings,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ProjectSettings {
+    pub default_client: Option<String>,
+    pub auto_create_worktree: bool,
+    pub worktree_base_path: Option<PathBuf>,
+}
+
+impl AdaProject {
+    pub fn new(path: PathBuf) -> Self {
+        let now = Utc::now();
+        // Extract project name from path
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "Unnamed Project".into());
+
+        Self {
+            id: uuid::Uuid::new_v4().to_string(),
+            name,
+            path,
+            description: None,
+            created_at: now,
+            updated_at: now,
+            terminal_ids: Vec::new(),
+            settings: ProjectSettings::default(),
+        }
+    }
+    
+    pub fn add_terminal(&mut self, terminal_id: String) {
+        if !self.terminal_ids.contains(&terminal_id) {
+            self.terminal_ids.push(terminal_id);
+            self.updated_at = Utc::now();
+        }
+    }
+    
+    pub fn remove_terminal(&mut self, terminal_id: &str) {
+        self.terminal_ids.retain(|id| id != terminal_id);
+        self.updated_at = Utc::now();
+    }
+}
+
+/// Request to create a new project (new directory with git init)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateProjectRequest {
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectSummary {
+    pub id: String,
+    pub name: String,
+    pub path: String,
+    pub terminal_count: usize,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl From<&AdaProject> for ProjectSummary {
+    fn from(project: &AdaProject) -> Self {
+        Self {
+            id: project.id.clone(),
+            name: project.name.clone(),
+            path: project.path.to_string_lossy().to_string(),
+            terminal_count: project.terminal_ids.len(),
+            created_at: project.created_at,
+            updated_at: project.updated_at,
+        }
+    }
+}
