@@ -5,30 +5,33 @@ use thiserror::Error;
 pub enum Error {
     #[error("Project not found: {0}")]
     ProjectNotFound(String),
-    
+
     #[error("Terminal not found: {0}")]
     TerminalNotFound(String),
-    
+
     #[error("Git error: {0}")]
     GitError(String),
-    
+
     #[error("IO error: {0}")]
     IoError(String),
-    
+
     #[error("Configuration error: {0}")]
     ConfigError(String),
-    
+
     #[error("Terminal error: {0}")]
     TerminalError(String),
-    
+
     #[error("Client not found: {0}")]
     ClientNotFound(String),
-    
+
     #[error("Worktree error: {0}")]
     WorktreeError(String),
-    
+
     #[error("Serialization error: {0}")]
     SerializationError(String),
+
+    #[error("Invalid request: {0}")]
+    InvalidRequest(String),
 }
 
 impl From<std::io::Error> for Error {

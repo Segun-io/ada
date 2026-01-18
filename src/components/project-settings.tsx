@@ -1,6 +1,4 @@
 import { useState, useEffect } from "react"
-import { FolderOpen } from "lucide-react"
-import { open } from "@tauri-apps/plugin-dialog"
 
 import { Button } from "@/components/ui/button"
 import {
@@ -11,9 +9,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Switch } from "@/components/ui/switch"
 import {
   Select,
   SelectContent,
@@ -42,32 +38,12 @@ export function ProjectSettings({
   const [defaultClient, setDefaultClient] = useState<string>(
     project.settings.default_client || ""
   )
-  const [autoCreateWorktree, setAutoCreateWorktree] = useState(
-    project.settings.auto_create_worktree
-  )
-  const [worktreeBasePath, setWorktreeBasePath] = useState(
-    project.settings.worktree_base_path || ""
-  )
   const [isSaving, setIsSaving] = useState(false)
 
   // Reset form when project changes
   useEffect(() => {
     setDefaultClient(project.settings.default_client || "")
-    setAutoCreateWorktree(project.settings.auto_create_worktree)
-    setWorktreeBasePath(project.settings.worktree_base_path || "")
   }, [project])
-
-  const handleBrowseWorktreePath = async () => {
-    const selected = await open({
-      directory: true,
-      multiple: false,
-      title: "Select Worktree Base Directory",
-    })
-
-    if (selected) {
-      setWorktreeBasePath(selected)
-    }
-  }
 
   const handleSave = async () => {
     setIsSaving(true)
@@ -75,8 +51,9 @@ export function ProjectSettings({
       const request: UpdateProjectSettingsRequest = {
         project_id: project.id,
         default_client: defaultClient || null,
-        auto_create_worktree: autoCreateWorktree,
-        worktree_base_path: worktreeBasePath || null,
+        // Preserve existing worktree settings
+        auto_create_worktree: project.settings.auto_create_worktree,
+        worktree_base_path: project.settings.worktree_base_path,
       }
 
       const updatedProject = await projectApi.updateSettings(request)
@@ -135,40 +112,18 @@ export function ProjectSettings({
             </p>
           </div>
 
-          {/* Auto Create Worktree */}
-          <div className="flex items-center justify-between">
-            <div className="space-y-0.5">
-              <Label htmlFor="auto-worktree">Auto-create Worktrees</Label>
+          {/* Worktree Base Path (read-only) */}
+          {project.is_git_repo && (
+            <div className="grid gap-2">
+              <Label className="text-muted-foreground">Worktree Directory</Label>
+              <p className="text-sm font-mono bg-muted px-3 py-2 rounded-md truncate">
+                {project.settings.worktree_base_path || `${project.path}/.worktrees`}
+              </p>
               <p className="text-xs text-muted-foreground">
-                Automatically create git worktrees for branch-specific terminals
+                Where git worktrees are created for branch-specific terminals
               </p>
             </div>
-            <Switch
-              id="auto-worktree"
-              checked={autoCreateWorktree}
-              onCheckedChange={setAutoCreateWorktree}
-            />
-          </div>
-
-          {/* Worktree Base Path */}
-          <div className="grid gap-2">
-            <Label htmlFor="worktree-path">Worktree Base Directory</Label>
-            <div className="flex gap-2">
-              <Input
-                id="worktree-path"
-                value={worktreeBasePath}
-                onChange={(e) => setWorktreeBasePath(e.target.value)}
-                placeholder={`${project.path}/.worktrees`}
-                className="flex-1"
-              />
-              <Button variant="outline" size="icon" onClick={handleBrowseWorktreePath}>
-                <FolderOpen className="h-4 w-4" />
-              </Button>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              Where to create git worktrees. Leave empty for default (.worktrees in project root)
-            </p>
-          </div>
+          )}
         </div>
 
         <DialogFooter>

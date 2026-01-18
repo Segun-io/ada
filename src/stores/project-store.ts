@@ -11,7 +11,7 @@ interface ProjectState {
   // Actions
   loadProjects: () => Promise<void>
   loadProject: (projectId: string) => Promise<void>
-  createProject: (path: string) => Promise<AdaProject>
+  createProject: (path: string, initGit?: boolean) => Promise<AdaProject>
   openProject: (path: string) => Promise<AdaProject>
   deleteProject: (projectId: string) => Promise<void>
   setCurrentProject: (project: AdaProject | null) => void
@@ -44,10 +44,10 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     }
   },
 
-  createProject: async (path) => {
+  createProject: async (path, initGit = true) => {
     set({ isLoading: true, error: null })
     try {
-      const project = await projectApi.create(path)
+      const project = await projectApi.create(path, initGit)
       await get().loadProjects()
       set({ currentProject: project, isLoading: false })
       return project

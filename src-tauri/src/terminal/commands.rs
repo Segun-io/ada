@@ -1,11 +1,12 @@
 use tauri::State;
 use chrono::Utc;
 use std::sync::Arc;
+use std::path::PathBuf;
 
 use crate::error::{Error, Result};
 use crate::state::AppState;
 use crate::git;
-use super::{Terminal, TerminalInfo, TerminalStatus, CreateTerminalRequest, ResizeTerminalRequest, TerminalOutputBuffer};
+use super::{Terminal, TerminalInfo, TerminalStatus, TerminalMode, CreateTerminalRequest, ResizeTerminalRequest, TerminalOutputBuffer};
 use super::pty::{spawn_pty, write_to_pty, resize_pty};
 
 #[tauri::command]
@@ -21,7 +22,7 @@ pub async fn create_terminal(
             .cloned()
             .ok_or_else(|| Error::ProjectNotFound(request.project_id.clone()))?
     };
-    
+
     // Get client configuration
     let client = {
         let clients = state.clients.read();
@@ -30,28 +31,47 @@ pub async fn create_terminal(
             .cloned()
             .ok_or_else(|| Error::ClientNotFound(request.client_id.clone()))?
     };
-    
+
     let terminal_id = uuid::Uuid::new_v4().to_string();
-    
-    // Determine working directory (worktree or project root)
-    let (working_dir, worktree_path) = if request.use_worktree && request.branch.is_some() {
-        let branch = request.branch.as_ref().unwrap();
-        let worktree_base = project.settings.worktree_base_path
-            .clone()
-            .unwrap_or_else(|| project.path.join(".worktrees"));
-        
-        let worktree_path = worktree_base.join(branch.replace('/', "-"));
-        
-        // Create worktree if it doesn't exist
-        if !worktree_path.exists() {
-            git::create_worktree_internal(&project.path, branch, &worktree_path)?;
+
+    // Determine working directory, worktree path, branch, and folder_path based on mode
+    let (working_dir, worktree_path, branch, folder_path) = match request.mode {
+        TerminalMode::Main | TerminalMode::CurrentBranch => {
+            // Run at project root on current branch
+            (project.path.clone(), None, None, None)
         }
-        
-        (worktree_path.clone(), Some(worktree_path))
-    } else {
-        (project.path.clone(), None)
+        TerminalMode::Folder => {
+            // Run in a subfolder of project
+            let folder = request.folder_path.as_ref().ok_or_else(|| {
+                Error::InvalidRequest("Folder mode requires folder_path".into())
+            })?;
+            let folder_path_buf = PathBuf::from(folder);
+            let working_dir = project.path.join(&folder_path_buf);
+            if !working_dir.exists() {
+                return Err(Error::InvalidRequest(format!("Folder does not exist: {}", folder)));
+            }
+            (working_dir, None, None, Some(folder_path_buf))
+        }
+        TerminalMode::Worktree => {
+            // Run in an isolated worktree
+            let branch = request.worktree_branch.as_ref().ok_or_else(|| {
+                Error::InvalidRequest("Worktree mode requires worktree_branch".into())
+            })?;
+            let worktree_base = project.settings.worktree_base_path
+                .clone()
+                .unwrap_or_else(|| project.path.join(".worktrees"));
+
+            let worktree_path = worktree_base.join(branch.replace('/', "-"));
+
+            // Create worktree if it doesn't exist
+            if !worktree_path.exists() {
+                git::create_worktree_internal(&project.path, branch, &worktree_path)?;
+            }
+
+            (worktree_path.clone(), Some(worktree_path), Some(branch.clone()), None)
+        }
     };
-    
+
     // Create output buffer
     let output_buffer = Arc::new(TerminalOutputBuffer::new());
 
@@ -72,10 +92,13 @@ pub async fn create_terminal(
         name: request.name,
         client_id: request.client_id,
         working_dir,
-        branch: request.branch,
+        branch,
         worktree_path,
         status: TerminalStatus::Running,
         created_at: Utc::now(),
+        mode: request.mode,
+        is_main: false,
+        folder_path,
     };
 
     let terminal_info = TerminalInfo::from(&terminal);
@@ -90,6 +113,93 @@ pub async fn create_terminal(
         let mut projects = state.projects.write();
         if let Some(project) = projects.get_mut(&request.project_id) {
             project.add_terminal(terminal_id.clone());
+            let _ = state.save_project(project);
+        }
+    }
+
+    // Save terminal to disk
+    let _ = state.save_terminal(&terminal_id);
+
+    Ok(terminal_info)
+}
+
+/// Create the main terminal for a project
+#[tauri::command]
+pub async fn create_main_terminal(
+    state: State<'_, AppState>,
+    project_id: String,
+    client_id: String,
+) -> Result<TerminalInfo> {
+    // Get project
+    let project = {
+        let projects = state.projects.read();
+        projects
+            .get(&project_id)
+            .cloned()
+            .ok_or_else(|| Error::ProjectNotFound(project_id.clone()))?
+    };
+
+    // Check if main terminal already exists
+    if let Some(main_id) = &project.main_terminal_id {
+        let terminals = state.terminals.read();
+        if let Some(terminal) = terminals.get(main_id) {
+            return Ok(TerminalInfo::from(terminal));
+        }
+    }
+
+    // Get client configuration
+    let client = {
+        let clients = state.clients.read();
+        clients
+            .get(&client_id)
+            .cloned()
+            .ok_or_else(|| Error::ClientNotFound(client_id.clone()))?
+    };
+
+    let terminal_id = uuid::Uuid::new_v4().to_string();
+
+    // Create output buffer
+    let output_buffer = Arc::new(TerminalOutputBuffer::new());
+
+    // Spawn PTY at project root
+    let pty_handle = spawn_pty(
+        &state.app_handle,
+        &terminal_id,
+        &project.path,
+        &client,
+        120,
+        30,
+        output_buffer.clone(),
+    )?;
+
+    let terminal = Terminal {
+        id: terminal_id.clone(),
+        project_id: project_id.clone(),
+        name: "main".to_string(),
+        client_id,
+        working_dir: project.path.clone(),
+        branch: None,
+        worktree_path: None,
+        status: TerminalStatus::Running,
+        created_at: Utc::now(),
+        mode: TerminalMode::Main,
+        is_main: true,
+        folder_path: None,
+    };
+
+    let terminal_info = TerminalInfo::from(&terminal);
+
+    // Add terminal, pty handle, and output buffer to state
+    state.terminals.write().insert(terminal_id.clone(), terminal);
+    state.pty_handles.write().insert(terminal_id.clone(), pty_handle);
+    state.output_buffers.write().insert(terminal_id.clone(), output_buffer);
+
+    // Update project with main terminal ID
+    {
+        let mut projects = state.projects.write();
+        if let Some(project) = projects.get_mut(&project_id) {
+            project.add_terminal(terminal_id.clone());
+            project.main_terminal_id = Some(terminal_id.clone());
             let _ = state.save_project(project);
         }
     }
@@ -162,6 +272,16 @@ pub async fn close_terminal(
     state: State<'_, AppState>,
     terminal_id: String,
 ) -> Result<()> {
+    // Check if this is a main terminal - cannot be closed
+    {
+        let terminals = state.terminals.read();
+        if let Some(terminal) = terminals.get(&terminal_id) {
+            if terminal.is_main {
+                return Err(Error::InvalidRequest("Cannot close the main terminal".into()));
+            }
+        }
+    }
+
     // Remove terminal, pty handle, and output buffer
     let terminal = state.terminals.write().remove(&terminal_id);
     state.pty_handles.write().remove(&terminal_id);

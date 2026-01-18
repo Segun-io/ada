@@ -31,6 +31,7 @@ pub fn run() {
             project::commands::update_project_settings,
             // Terminal commands
             terminal::commands::create_terminal,
+            terminal::commands::create_main_terminal,
             terminal::commands::list_terminals,
             terminal::commands::close_terminal,
             terminal::commands::write_terminal,

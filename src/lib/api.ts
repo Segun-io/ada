@@ -2,7 +2,6 @@ import { invoke } from "@tauri-apps/api/core"
 import type {
   AdaProject,
   ProjectSummary,
-  CreateProjectRequest,
   TerminalInfo,
   CreateTerminalRequest,
   ResizeTerminalRequest,
@@ -21,11 +20,11 @@ export interface UpdateProjectSettingsRequest {
 
 // Project API
 export const projectApi = {
-  // Create a new project (creates directory, inits git, makes initial commit)
-  create: (path: string): Promise<AdaProject> =>
-    invoke("create_project", { request: { path } }),
+  // Create a new project (creates directory, optionally inits git)
+  create: (path: string, initGit: boolean = true): Promise<AdaProject> =>
+    invoke("create_project", { request: { path, init_git: initGit } }),
 
-  // Open an existing git repository as a project
+  // Open an existing folder as a project
   open: (path: string): Promise<AdaProject> =>
     invoke("open_project", { path }),
 
@@ -46,6 +45,9 @@ export const projectApi = {
 export const terminalApi = {
   create: (request: CreateTerminalRequest): Promise<TerminalInfo> =>
     invoke("create_terminal", { request }),
+
+  createMain: (projectId: string, clientId: string): Promise<TerminalInfo> =>
+    invoke("create_main_terminal", { projectId, clientId }),
 
   list: (projectId: string): Promise<TerminalInfo[]> =>
     invoke("list_terminals", { projectId }),

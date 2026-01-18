@@ -1,8 +1,8 @@
-import { Plus, X, RotateCcw, Loader2 } from "lucide-react"
+import { Plus, X, RotateCcw, Loader2, Home, FolderOpen, GitBranch, TreeDeciduous } from "lucide-react"
 import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
-import type { TerminalInfo, ClientSummary, AgentActivity } from "@/lib/types"
+import type { TerminalInfo, ClientSummary, AgentActivity, TerminalMode } from "@/lib/types"
 
 interface TerminalStripProps {
   terminals: TerminalInfo[]
@@ -72,6 +72,22 @@ interface TerminalCardProps {
   onRestart: () => void
 }
 
+// Get mode display info
+const getModeInfo = (mode: TerminalMode) => {
+  switch (mode) {
+    case "main":
+      return { icon: Home, color: "text-purple-400", bgColor: "bg-purple-500/20", label: "main" }
+    case "folder":
+      return { icon: FolderOpen, color: "text-orange-400", bgColor: "bg-orange-500/20", label: "folder" }
+    case "current_branch":
+      return { icon: GitBranch, color: "text-green-400", bgColor: "bg-green-500/20", label: "branch" }
+    case "worktree":
+      return { icon: TreeDeciduous, color: "text-blue-400", bgColor: "bg-blue-500/20", label: "worktree" }
+    default:
+      return { icon: GitBranch, color: "text-muted-foreground", bgColor: "bg-muted", label: mode }
+  }
+}
+
 function TerminalCard({
   terminal,
   clientName,
@@ -83,6 +99,8 @@ function TerminalCard({
 }: TerminalCardProps) {
   const isStopped = terminal.status === "stopped"
   const isRunning = terminal.status === "running"
+  const modeInfo = getModeInfo(terminal.mode)
+  const ModeIcon = modeInfo.icon
 
   // Terminal status color (for the terminal itself)
   const getTerminalStatusColor = () => {
@@ -124,18 +142,20 @@ function TerminalCard({
         isActive && "ring-2 ring-primary ring-offset-2 ring-offset-background"
       )}
     >
-      {/* Close Button */}
-      <Button
-        variant="ghost"
-        size="icon"
-        className="absolute -top-1 -right-1 h-5 w-5 rounded-full bg-background border border-border opacity-0 group-hover:opacity-100 transition-opacity z-10"
-        onClick={(e) => {
-          e.stopPropagation()
-          onClose()
-        }}
-      >
-        <X className="h-3 w-3" />
-      </Button>
+      {/* Close Button - hidden for main terminal */}
+      {!terminal.is_main && (
+        <Button
+          variant="ghost"
+          size="icon"
+          className="absolute -top-1 -right-1 h-5 w-5 rounded-full bg-background border border-border opacity-0 group-hover:opacity-100 transition-opacity z-10"
+          onClick={(e) => {
+            e.stopPropagation()
+            onClose()
+          }}
+        >
+          <X className="h-3 w-3" />
+        </Button>
+      )}
 
       {/* Mini Terminal Preview */}
       <div className={cn(
@@ -143,6 +163,16 @@ function TerminalCard({
         getTerminalStatusColor(),
         isStopped && "opacity-60"
       )}>
+        {/* Mode indicator badge in top-left */}
+        <div className={cn(
+          "absolute top-1 left-1 flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-medium",
+          modeInfo.bgColor,
+          modeInfo.color
+        )}>
+          <ModeIcon className="h-2.5 w-2.5" />
+          {modeInfo.label}
+        </div>
+
         {/* Activity indicator in thumbnail */}
         {isRunning && activity === "thinking" && (
           <Loader2 className="h-6 w-6 text-blue-400 animate-spin" />
@@ -203,7 +233,9 @@ function TerminalCard({
           )}
         </div>
         <p className="text-[10px] text-muted-foreground truncate">
-          {terminal.branch || "main"}
+          {terminal.mode === "folder"
+            ? terminal.folder_path || "root"
+            : terminal.branch || "main"}
         </p>
         <p className="text-[10px] text-muted-foreground truncate">{clientName}</p>
       </div>

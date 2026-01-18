@@ -13,6 +13,7 @@ interface TerminalActivityState {
 interface TerminalState {
   terminals: TerminalInfo[]
   activeTerminalId: string | null
+  mainTerminalId: string | null
   terminalOutputs: Record<string, string[]>
   terminalActivity: Record<string, TerminalActivityState>
   isLoading: boolean
@@ -21,6 +22,7 @@ interface TerminalState {
   // Actions
   loadTerminals: (projectId: string) => Promise<void>
   createTerminal: (request: CreateTerminalRequest) => Promise<TerminalInfo>
+  createMainTerminal: (projectId: string, clientId: string) => Promise<TerminalInfo>
   closeTerminal: (terminalId: string) => Promise<void>
   restartTerminal: (terminalId: string) => Promise<TerminalInfo>
   markTerminalStopped: (terminalId: string) => Promise<void>
@@ -58,6 +60,7 @@ function detectActivityFromOutput(data: string): AgentActivity {
 export const useTerminalStore = create<TerminalState>((set, get) => ({
   terminals: [],
   activeTerminalId: null,
+  mainTerminalId: null,
   terminalOutputs: {},
   terminalActivity: {},
   isLoading: false,
@@ -70,18 +73,26 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
 
       // Initialize activity state for all terminals
       const activityState: Record<string, TerminalActivityState> = {}
+      let mainId: string | null = null
       for (const terminal of terminals) {
         activityState[terminal.id] = {
           activity: terminal.status === "running" ? "idle" : "idle",
           lastActivityAt: 0,
         }
+        if (terminal.is_main) {
+          mainId = terminal.id
+        }
       }
 
-      set({ terminals, terminalActivity: activityState, isLoading: false })
+      set({ terminals, terminalActivity: activityState, mainTerminalId: mainId, isLoading: false })
 
-      // Set first terminal as active if none selected
-      if (terminals.length > 0 && !get().activeTerminalId) {
-        set({ activeTerminalId: terminals[0].id })
+      // Set main terminal as active if none selected, otherwise first terminal
+      if (!get().activeTerminalId) {
+        if (mainId) {
+          set({ activeTerminalId: mainId })
+        } else if (terminals.length > 0) {
+          set({ activeTerminalId: terminals[0].id })
+        }
       }
     } catch (error) {
       set({ error: String(error), isLoading: false })
@@ -109,7 +120,37 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
     }
   },
 
+  createMainTerminal: async (projectId: string, clientId: string) => {
+    set({ isLoading: true, error: null })
+    try {
+      const terminal = await terminalApi.createMain(projectId, clientId)
+      set((state) => ({
+        terminals: [...state.terminals, terminal],
+        activeTerminalId: terminal.id,
+        mainTerminalId: terminal.id,
+        terminalOutputs: { ...state.terminalOutputs, [terminal.id]: [] },
+        terminalActivity: {
+          ...state.terminalActivity,
+          [terminal.id]: { activity: "idle", lastActivityAt: Date.now() },
+        },
+        isLoading: false,
+      }))
+      return terminal
+    } catch (error) {
+      set({ error: String(error), isLoading: false })
+      throw error
+    }
+  },
+
   closeTerminal: async (terminalId: string) => {
+    // Prevent closing main terminal
+    const state = get()
+    const terminal = state.terminals.find(t => t.id === terminalId)
+    if (terminal?.is_main) {
+      set({ error: "Cannot close the main terminal" })
+      return
+    }
+
     set({ isLoading: true, error: null })
     try {
       await terminalApi.close(terminalId)
@@ -117,14 +158,16 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
         const terminals = state.terminals.filter((t) => t.id !== terminalId)
         const { [terminalId]: _output, ...outputs } = state.terminalOutputs
         const { [terminalId]: _activity, ...activities } = state.terminalActivity
+        // If closing active terminal, switch to main or first terminal
+        let newActiveId = state.activeTerminalId
+        if (state.activeTerminalId === terminalId) {
+          newActiveId = state.mainTerminalId ?? terminals[0]?.id ?? null
+        }
         return {
           terminals,
           terminalOutputs: outputs,
           terminalActivity: activities,
-          activeTerminalId:
-            state.activeTerminalId === terminalId
-              ? terminals[0]?.id ?? null
-              : state.activeTerminalId,
+          activeTerminalId: newActiveId,
           isLoading: false,
         }
       })

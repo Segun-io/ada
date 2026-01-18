@@ -12,6 +12,12 @@ pub struct AdaProject {
     pub updated_at: DateTime<Utc>,
     pub terminal_ids: Vec<String>,
     pub settings: ProjectSettings,
+    /// The main terminal ID for this project (auto-created on project open)
+    #[serde(default)]
+    pub main_terminal_id: Option<String>,
+    /// Whether this project has a git repository
+    #[serde(default)]
+    pub is_git_repo: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -22,7 +28,7 @@ pub struct ProjectSettings {
 }
 
 impl AdaProject {
-    pub fn new(path: PathBuf) -> Self {
+    pub fn new(path: PathBuf, is_git_repo: bool) -> Self {
         let now = Utc::now();
         // Extract project name from path
         let name = path
@@ -39,6 +45,8 @@ impl AdaProject {
             updated_at: now,
             terminal_ids: Vec::new(),
             settings: ProjectSettings::default(),
+            main_terminal_id: None,
+            is_git_repo,
         }
     }
     
@@ -55,10 +63,17 @@ impl AdaProject {
     }
 }
 
-/// Request to create a new project (new directory with git init)
+/// Request to create a new project
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateProjectRequest {
     pub path: String,
+    /// Whether to initialize a git repository (default: true)
+    #[serde(default = "default_true")]
+    pub init_git: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,6 +84,8 @@ pub struct ProjectSummary {
     pub terminal_count: usize,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    pub main_terminal_id: Option<String>,
+    pub is_git_repo: bool,
 }
 
 impl From<&AdaProject> for ProjectSummary {
@@ -80,6 +97,8 @@ impl From<&AdaProject> for ProjectSummary {
             terminal_count: project.terminal_ids.len(),
             created_at: project.created_at,
             updated_at: project.updated_at,
+            main_terminal_id: project.main_terminal_id.clone(),
+            is_git_repo: project.is_git_repo,
         }
     }
 }

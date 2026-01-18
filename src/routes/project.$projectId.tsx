@@ -1,6 +1,6 @@
-import { createFileRoute } from "@tanstack/react-router"
-import { useEffect, useState } from "react"
-import { Plus, Terminal as TerminalIcon, Settings, Loader2 } from "lucide-react"
+import { createFileRoute, useNavigate } from "@tanstack/react-router"
+import { useEffect, useState, useRef } from "react"
+import { Plus, Terminal as TerminalIcon, Settings, Loader2, Home, FolderOpen, GitBranch, TreeDeciduous } from "lucide-react"
 import { listen } from "@tauri-apps/api/event"
 
 import { Button } from "@/components/ui/button"
@@ -14,7 +14,6 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Switch } from "@/components/ui/switch"
 import {
   Select,
   SelectContent,
@@ -22,12 +21,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 
 import { useProjectStore } from "@/stores/project-store"
 import { useTerminalStore } from "@/stores/terminal-store"
 import { useClientStore } from "@/stores/client-store"
 import { gitApi } from "@/lib/api"
-import type { BranchInfo, TerminalOutput } from "@/lib/types"
+import type { BranchInfo, TerminalOutput, TerminalMode } from "@/lib/types"
 import { TerminalView } from "@/components/terminal-view"
 import { TerminalStrip } from "@/components/terminal-strip"
 import { ProjectSettings } from "@/components/project-settings"
@@ -38,13 +38,15 @@ export const Route = createFileRoute("/project/$projectId")({
 
 function ProjectPage() {
   const { projectId } = Route.useParams()
+  const navigate = useNavigate()
 
-  const { currentProject, loadProject } = useProjectStore()
+  const { projects, currentProject, loadProject, isLoading: isProjectLoading, error: projectError } = useProjectStore()
   const {
     terminals,
     activeTerminalId,
     loadTerminals,
     createTerminal,
+    createMainTerminal,
     closeTerminal,
     restartTerminal,
     markTerminalStopped,
@@ -61,14 +63,34 @@ function ProjectPage() {
   const [isCreateTerminalOpen, setIsCreateTerminalOpen] = useState(false)
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
   const [, setTick] = useState(0)
+  const mainTerminalCreated = useRef(false)
+  const [hasInitialized, setHasInitialized] = useState(false)
 
   // Load project and terminals
   useEffect(() => {
+    setHasInitialized(true)
     loadProject(projectId)
     loadTerminals(projectId)
     loadClients()
     detectInstalledClients()
   }, [projectId, loadProject, loadTerminals, loadClients, detectInstalledClients])
+
+  // Auto-create main terminal when project loads
+  useEffect(() => {
+    if (currentProject && !mainTerminalCreated.current) {
+      const hasMainTerminal = terminals.some(t => t.is_main)
+      if (!hasMainTerminal) {
+        // Find first installed client
+        const installedClient = clients.find(c => c.installed)
+        if (installedClient) {
+          mainTerminalCreated.current = true
+          createMainTerminal(projectId, installedClient.id).catch(console.error)
+        }
+      } else {
+        mainTerminalCreated.current = true
+      }
+    }
+  }, [currentProject, terminals, clients, projectId, createMainTerminal])
 
   // Load branches when project is loaded
   useEffect(() => {
@@ -116,7 +138,42 @@ function ProjectPage() {
     return () => clearInterval(interval)
   }, [])
 
-  if (!currentProject) {
+  // Check if project exists in the list
+  const projectExists = projects.some(p => p.id === projectId)
+
+  // Track if we've ever successfully loaded this project (reset when projectId changes)
+  const hadProjectLoaded = useRef(false)
+  const lastProjectId = useRef(projectId)
+  if (lastProjectId.current !== projectId) {
+    hadProjectLoaded.current = false
+    lastProjectId.current = projectId
+  }
+  if (currentProject?.id === projectId) {
+    hadProjectLoaded.current = true
+  }
+
+  // Redirect to home if:
+  // 1. Project failed to load (error from backend)
+  // 2. Project was deleted (we had it loaded, now it's gone)
+  useEffect(() => {
+    // Don't redirect before initialization or while still loading
+    if (!hasInitialized || isProjectLoading) return
+
+    // Project load failed with error
+    if (projectError) {
+      navigate({ to: "/" })
+      return
+    }
+
+    // Project was deleted: we previously had it loaded, but now currentProject is null
+    // and it's no longer in the projects list
+    if (hadProjectLoaded.current && !currentProject && !projectExists) {
+      navigate({ to: "/" })
+    }
+  }, [hasInitialized, projectError, isProjectLoading, projectExists, currentProject, navigate])
+
+  // Show loading while initializing or loading
+  if (!hasInitialized || isProjectLoading) {
     return (
       <div className="flex h-full items-center justify-center">
         <div className="text-center">
@@ -127,11 +184,32 @@ function ProjectPage() {
     )
   }
 
+  // If we're about to redirect (error or no project), show nothing
+  if (projectError || !currentProject || currentProject.id !== projectId) {
+    return null
+  }
+
   const activeTerminal = terminals.find((t) => t.id === activeTerminalId)
   const activeClientName = activeTerminal
     ? clients.find((c) => c.id === activeTerminal.client_id)?.name || activeTerminal.client_id
     : ""
   const activeActivity = activeTerminalId ? getActivity(activeTerminalId) : "idle"
+
+  // Get mode display info
+  const getModeInfo = (mode: TerminalMode) => {
+    switch (mode) {
+      case "main":
+        return { icon: Home, color: "text-purple-400", label: "main" }
+      case "folder":
+        return { icon: FolderOpen, color: "text-orange-400", label: "folder" }
+      case "current_branch":
+        return { icon: GitBranch, color: "text-green-400", label: "branch" }
+      case "worktree":
+        return { icon: TreeDeciduous, color: "text-blue-400", label: "worktree" }
+      default:
+        return { icon: TerminalIcon, color: "text-muted-foreground", label: mode }
+    }
+  }
 
   return (
     <div className="flex h-full flex-col">
@@ -141,9 +219,25 @@ function ProjectPage() {
           <span className="font-semibold">{currentProject.name}:</span>
           {activeTerminal ? (
             <>
+              {/* Mode indicator */}
+              {(() => {
+                const modeInfo = getModeInfo(activeTerminal.mode)
+                const ModeIcon = modeInfo.icon
+                return (
+                  <span className={`flex items-center gap-1 ${modeInfo.color}`}>
+                    <ModeIcon className="h-3.5 w-3.5" />
+                    {modeInfo.label}
+                  </span>
+                )
+              })()}
+              <span className="text-muted-foreground">-</span>
               <span className="text-muted-foreground">{activeTerminal.name}</span>
               <span className="text-muted-foreground">-</span>
-              <span className="text-muted-foreground">{activeTerminal.branch || currentBranch || "main"}</span>
+              <span className="text-muted-foreground">
+                {activeTerminal.mode === "folder"
+                  ? activeTerminal.folder_path || "root"
+                  : activeTerminal.branch || currentBranch || "main"}
+              </span>
               <span className="text-muted-foreground">-</span>
               <span className="text-muted-foreground">{activeClientName}</span>
               <span className="text-muted-foreground">|</span>
@@ -296,8 +390,9 @@ interface CreateTerminalDialogProps {
     project_id: string
     name: string
     client_id: string
-    branch: string | null
-    use_worktree: boolean
+    mode: TerminalMode
+    folder_path: string | null
+    worktree_branch: string | null
   }) => Promise<void>
 }
 
@@ -310,20 +405,19 @@ function CreateTerminalDialog({
 }: CreateTerminalDialogProps) {
   const [name, setName] = useState("")
   const [clientId, setClientId] = useState("")
-  const [branch, setBranch] = useState<string>("")
-  const [newBranchName, setNewBranchName] = useState("")
-  const [isCreatingNewBranch, setIsCreatingNewBranch] = useState(false)
-  const [useWorktree, setUseWorktree] = useState(false)
+  const [mode, setMode] = useState<"folder" | "current_branch" | "worktree">("current_branch")
+  const [folderPath, setFolderPath] = useState("")
+  const [worktreeBranch, setWorktreeBranch] = useState("")
   const [isCreating, setIsCreating] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const installedClients = clients.filter((c) => c.installed)
-  const effectiveBranch = isCreatingNewBranch ? newBranchName : branch
 
   const handleCreate = async () => {
     if (!name || !clientId) return
-    // If creating new branch, must have worktree enabled and a branch name
-    if (isCreatingNewBranch && !newBranchName) return
+    if (mode === "folder" && !folderPath) return
+    if (mode === "worktree" && !worktreeBranch) return
+
     setIsCreating(true)
     setError(null)
     try {
@@ -331,8 +425,9 @@ function CreateTerminalDialog({
         project_id: projectId,
         name,
         client_id: clientId,
-        branch: effectiveBranch || null,
-        use_worktree: isCreatingNewBranch ? true : useWorktree,
+        mode,
+        folder_path: mode === "folder" ? folderPath : null,
+        worktree_branch: mode === "worktree" ? worktreeBranch : null,
       })
     } catch (err) {
       console.error("Failed to create terminal:", err)
@@ -342,16 +437,23 @@ function CreateTerminalDialog({
     }
   }
 
+  const isValid = name && clientId && (
+    mode === "current_branch" ||
+    (mode === "folder" && folderPath) ||
+    (mode === "worktree" && worktreeBranch)
+  )
+
   return (
-    <DialogContent>
+    <DialogContent className="sm:max-w-md">
       <DialogHeader>
         <DialogTitle>Create New Terminal</DialogTitle>
         <DialogDescription>
-          Spawn a new AI code agent terminal. Optionally attach it to a specific branch using git worktree.
+          Spawn a new AI code agent terminal with a specific mode.
         </DialogDescription>
       </DialogHeader>
 
       <div className="grid gap-4 py-4">
+        {/* Common fields */}
         <div className="grid gap-2">
           <Label htmlFor="terminal-name">Terminal Name</Label>
           <Input
@@ -382,78 +484,73 @@ function CreateTerminalDialog({
               )}
             </SelectContent>
           </Select>
-          {installedClients.length === 0 && (
-            <p className="text-xs text-muted-foreground">
-              Install Claude Code, OpenCode, or Codex to get started
-            </p>
-          )}
         </div>
 
+        {/* Mode selection tabs */}
         <div className="grid gap-2">
-          <div className="flex items-center justify-between">
-            <Label htmlFor="branch">Branch</Label>
-            <button
-              type="button"
-              className="text-xs text-primary hover:underline"
-              onClick={() => {
-                setIsCreatingNewBranch(!isCreatingNewBranch)
-                if (!isCreatingNewBranch) {
-                  setBranch("")
-                } else {
-                  setNewBranchName("")
-                }
-              }}
-            >
-              {isCreatingNewBranch ? "Select existing branch" : "Create new branch"}
-            </button>
-          </div>
+          <Label>Terminal Mode</Label>
+          <Tabs value={mode} onValueChange={(v) => setMode(v as typeof mode)}>
+            <TabsList className="grid w-full grid-cols-3">
+              <TabsTrigger value="current_branch" className="flex items-center gap-1 text-xs">
+                <GitBranch className="h-3 w-3" />
+                Branch
+              </TabsTrigger>
+              <TabsTrigger value="folder" className="flex items-center gap-1 text-xs">
+                <FolderOpen className="h-3 w-3" />
+                Folder
+              </TabsTrigger>
+              <TabsTrigger value="worktree" className="flex items-center gap-1 text-xs">
+                <TreeDeciduous className="h-3 w-3" />
+                Worktree
+              </TabsTrigger>
+            </TabsList>
 
-          {isCreatingNewBranch ? (
-            <Input
-              id="new-branch"
-              value={newBranchName}
-              onChange={(e) => setNewBranchName(e.target.value)}
-              placeholder="feature/my-new-branch"
-            />
-          ) : (
-            <Select
-              value={branch || "__default__"}
-              onValueChange={(val) => setBranch(val === "__default__" ? "" : val)}
-            >
-              <SelectTrigger>
-                <SelectValue placeholder="Select a branch" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="__default__">Default (current branch)</SelectItem>
-                {branches
-                  .filter((b) => !b.is_remote)
-                  .map((b) => (
-                    <SelectItem key={b.name} value={b.name}>
-                      {b.name} {b.is_current && "(current)"}
-                    </SelectItem>
-                  ))}
-              </SelectContent>
-            </Select>
-          )}
-
-          {isCreatingNewBranch && (
-            <p className="text-xs text-muted-foreground">
-              A new branch will be created with a git worktree for isolated development
-            </p>
-          )}
-        </div>
-
-        {!isCreatingNewBranch && branch && (
-          <div className="flex items-center justify-between">
-            <div className="space-y-0.5">
-              <Label htmlFor="use-worktree">Use Git Worktree</Label>
+            <TabsContent value="current_branch" className="mt-3">
               <p className="text-xs text-muted-foreground">
-                Create an isolated worktree for this branch
+                Runs at project root on the current branch.
               </p>
-            </div>
-            <Switch id="use-worktree" checked={useWorktree} onCheckedChange={setUseWorktree} />
-          </div>
-        )}
+            </TabsContent>
+
+            <TabsContent value="folder" className="mt-3 space-y-2">
+              <Label htmlFor="folder-path">Folder Path</Label>
+              <Input
+                id="folder-path"
+                value={folderPath}
+                onChange={(e) => setFolderPath(e.target.value)}
+                placeholder="src/components"
+              />
+              <p className="text-xs text-muted-foreground">
+                Runs in a subfolder of the project.
+              </p>
+            </TabsContent>
+
+            <TabsContent value="worktree" className="mt-3 space-y-2">
+              <Label htmlFor="worktree-branch">Branch</Label>
+              <Select value={worktreeBranch} onValueChange={setWorktreeBranch}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select or enter a branch" />
+                </SelectTrigger>
+                <SelectContent>
+                  {branches
+                    .filter((b) => !b.is_remote)
+                    .map((b) => (
+                      <SelectItem key={b.name} value={b.name}>
+                        {b.name} {b.is_current && "(current)"}
+                      </SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+              <Input
+                value={worktreeBranch}
+                onChange={(e) => setWorktreeBranch(e.target.value)}
+                placeholder="Or type a new branch name"
+              />
+              <p className="text-xs text-muted-foreground">
+                Runs in an isolated git worktree for branch work.
+              </p>
+            </TabsContent>
+          </Tabs>
+        </div>
 
         {error && (
           <div className="rounded-md bg-destructive/10 border border-destructive/20 p-3">
@@ -466,10 +563,7 @@ function CreateTerminalDialog({
         <Button variant="outline" onClick={onClose}>
           Cancel
         </Button>
-        <Button
-          onClick={handleCreate}
-          disabled={!name || !clientId || isCreating || (isCreatingNewBranch && !newBranchName)}
-        >
+        <Button onClick={handleCreate} disabled={!isValid || isCreating}>
           {isCreating ? "Creating..." : "Create Terminal"}
         </Button>
       </DialogFooter>

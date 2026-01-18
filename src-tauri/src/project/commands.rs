@@ -61,7 +61,7 @@ pub struct UpdateProjectSettingsRequest {
     pub worktree_base_path: Option<String>,
 }
 
-/// Create a new project - creates directory, initializes git, and makes initial commit
+/// Create a new project - creates directory and optionally initializes git
 #[tauri::command]
 pub async fn create_project(
     state: State<'_, AppState>,
@@ -74,15 +74,15 @@ pub async fn create_project(
         // If it exists, check if it's empty or has a .git folder
         let git_dir = path.join(".git");
         if git_dir.exists() {
-            return Err(Error::GitError(
-                "This folder is already a git repository. Use 'Open Existing Project' instead.".into()
+            return Err(Error::InvalidRequest(
+                "This folder is already a git repository. Use 'Open Existing' instead.".into()
             ));
         }
 
         // Check if directory is empty (allow creating in empty directories)
         let is_empty = path.read_dir()?.next().is_none();
         if !is_empty {
-            return Err(Error::GitError(
+            return Err(Error::InvalidRequest(
                 "This folder is not empty. Please choose an empty folder or a new location.".into()
             ));
         }
@@ -91,22 +91,15 @@ pub async fn create_project(
         std::fs::create_dir_all(&path)?;
     }
 
-    // Initialize git repository
-    let output = std::process::Command::new("git")
-        .args(["init"])
-        .current_dir(&path)
-        .output()?;
+    let is_git_repo = if request.init_git {
+        // Initialize git with .worktrees in .gitignore
+        init_git_with_worktree_ignore(&path)?;
+        true
+    } else {
+        false
+    };
 
-    if !output.status.success() {
-        return Err(Error::GitError(
-            String::from_utf8_lossy(&output.stderr).to_string()
-        ));
-    }
-
-    // Create initial commit
-    create_initial_commit(&path)?;
-
-    let project = AdaProject::new(path);
+    let project = AdaProject::new(path, is_git_repo);
 
     // Save project
     state.save_project(&project)?;
@@ -117,7 +110,79 @@ pub async fn create_project(
     Ok(project)
 }
 
-/// Open an existing git repository as a project
+/// Initialize git in a folder with .gitignore containing .worktrees/
+fn init_git_with_worktree_ignore(repo_path: &Path) -> Result<()> {
+    // Initialize git repository
+    let output = std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(repo_path)
+        .output()?;
+
+    if !output.status.success() {
+        return Err(Error::GitError(
+            String::from_utf8_lossy(&output.stderr).to_string()
+        ));
+    }
+
+    // Create .gitignore with .worktrees/
+    let gitignore_path = repo_path.join(".gitignore");
+    let gitignore_content = if gitignore_path.exists() {
+        let existing = std::fs::read_to_string(&gitignore_path)?;
+        if !existing.contains(".worktrees") {
+            format!("{}\n# Ada worktrees\n.worktrees/\n", existing.trim_end())
+        } else {
+            existing
+        }
+    } else {
+        "# Ada worktrees\n.worktrees/\n".to_string()
+    };
+    std::fs::write(&gitignore_path, gitignore_content)?;
+
+    // Stage .gitignore
+    let output = std::process::Command::new("git")
+        .args(["add", ".gitignore"])
+        .current_dir(repo_path)
+        .output()?;
+
+    if !output.status.success() {
+        return Err(Error::GitError(
+            String::from_utf8_lossy(&output.stderr).to_string()
+        ));
+    }
+
+    // Create initial commit
+    let output = std::process::Command::new("git")
+        .args(["commit", "-m", "Initial commit (created by Ada)"])
+        .current_dir(repo_path)
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if !stderr.contains("nothing to commit") {
+            return Err(Error::GitError(stderr.to_string()));
+        }
+    }
+
+    Ok(())
+}
+
+/// Add .worktrees/ to .gitignore if not already present
+fn add_worktrees_to_gitignore(repo_path: &Path) -> Result<()> {
+    let gitignore_path = repo_path.join(".gitignore");
+    let gitignore_content = if gitignore_path.exists() {
+        let existing = std::fs::read_to_string(&gitignore_path)?;
+        if existing.contains(".worktrees") {
+            return Ok(()); // Already has .worktrees, nothing to do
+        }
+        format!("{}\n# Ada worktrees\n.worktrees/\n", existing.trim_end())
+    } else {
+        "# Ada worktrees\n.worktrees/\n".to_string()
+    };
+    std::fs::write(&gitignore_path, gitignore_content)?;
+    Ok(())
+}
+
+/// Open any folder as a project (respects existing git status)
 #[tauri::command]
 pub async fn open_project(
     state: State<'_, AppState>,
@@ -127,22 +192,7 @@ pub async fn open_project(
 
     // Verify path exists
     if !path.exists() {
-        return Err(Error::GitError("The selected folder does not exist.".into()));
-    }
-
-    // Verify it's a git repository
-    let git_dir = path.join(".git");
-    if !git_dir.exists() {
-        return Err(Error::GitError(
-            "Selected folder is not a git repository. Use 'New Project' to create one.".into()
-        ));
-    }
-
-    // Verify it has at least one commit
-    if !has_commits(&path) {
-        return Err(Error::GitError(
-            "The git repository has no commits. Please make an initial commit first, or use 'New Project' to create a fresh project.".into()
-        ));
+        return Err(Error::InvalidRequest("The selected folder does not exist.".into()));
     }
 
     // Check if project already exists for this path
@@ -155,7 +205,17 @@ pub async fn open_project(
         }
     }
 
-    let project = AdaProject::new(path);
+    // Check if it's a git repository
+    let git_dir = path.join(".git");
+    let is_git_repo = git_dir.exists();
+
+    if is_git_repo {
+        // For git repos, add .worktrees to .gitignore if not present
+        add_worktrees_to_gitignore(&path)?;
+    }
+    // For non-git folders, we just open them as-is
+
+    let project = AdaProject::new(path, is_git_repo);
 
     // Save project
     state.save_project(&project)?;

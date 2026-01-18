@@ -8,6 +8,8 @@ export interface AdaProject {
   updated_at: string
   terminal_ids: string[]
   settings: ProjectSettings
+  main_terminal_id: string | null
+  is_git_repo: boolean
 }
 
 export interface ProjectSettings {
@@ -23,15 +25,19 @@ export interface ProjectSummary {
   terminal_count: number
   created_at: string
   updated_at: string
+  main_terminal_id: string | null
+  is_git_repo: boolean
 }
 
 export interface CreateProjectRequest {
   path: string
+  init_git: boolean
 }
 
 // Terminal types
 export type TerminalStatus = "starting" | "running" | "stopped" | "error"
 export type AgentActivity = "idle" | "active" | "thinking"
+export type TerminalMode = "main" | "folder" | "current_branch" | "worktree"
 
 export interface TerminalInfo {
   id: string
@@ -43,6 +49,9 @@ export interface TerminalInfo {
   worktree_path: string | null
   status: TerminalStatus
   created_at: string
+  mode: TerminalMode
+  is_main: boolean
+  folder_path: string | null
 }
 
 // Extended terminal info with frontend-tracked activity
@@ -55,8 +64,9 @@ export interface CreateTerminalRequest {
   project_id: string
   name: string
   client_id: string
-  branch: string | null
-  use_worktree: boolean
+  mode: TerminalMode
+  folder_path: string | null
+  worktree_branch: string | null
 }
 
 export interface TerminalOutput {
