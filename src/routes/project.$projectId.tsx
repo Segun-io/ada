@@ -26,7 +26,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { useProjectStore } from "@/stores/project-store"
 import { useTerminalStore } from "@/stores/terminal-store"
 import { useClientStore } from "@/stores/client-store"
-import { gitApi } from "@/lib/api"
+import { gitApi, projectApi } from "@/lib/api"
 import type { BranchInfo, TerminalOutput, TerminalMode } from "@/lib/types"
 import { TerminalView } from "@/components/terminal-view"
 import { TerminalStrip } from "@/components/terminal-strip"
@@ -63,8 +63,8 @@ function ProjectPage() {
   const [isCreateTerminalOpen, setIsCreateTerminalOpen] = useState(false)
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
   const [, setTick] = useState(0)
-  const mainTerminalCreated = useRef(false)
   const [hasInitialized, setHasInitialized] = useState(false)
+  const mainTerminalCreatingRef = useRef(false)
 
   // Load project and terminals
   useEffect(() => {
@@ -75,22 +75,54 @@ function ProjectPage() {
     detectInstalledClients()
   }, [projectId, loadProject, loadTerminals, loadClients, detectInstalledClients])
 
-  // Auto-create main terminal when project loads
+  // Find main terminal
+  const mainTerminal = terminals.find(t => t.is_main) || null
+
+  // Auto-create main terminal when default_client is set and no main terminal exists
   useEffect(() => {
-    if (currentProject && !mainTerminalCreated.current) {
-      const hasMainTerminal = terminals.some(t => t.is_main)
-      if (!hasMainTerminal) {
-        // Find first installed client
-        const installedClient = clients.find(c => c.installed)
-        if (installedClient) {
-          mainTerminalCreated.current = true
-          createMainTerminal(projectId, installedClient.id).catch(console.error)
-        }
-      } else {
-        mainTerminalCreated.current = true
+    if (
+      currentProject?.settings.default_client &&
+      !mainTerminal &&
+      !mainTerminalCreatingRef.current &&
+      clients.length > 0
+    ) {
+      const defaultClient = clients.find(c => c.id === currentProject.settings.default_client && c.installed)
+      if (defaultClient) {
+        mainTerminalCreatingRef.current = true
+        createMainTerminal(projectId, defaultClient.id)
+          .catch(console.error)
+          .finally(() => {
+            mainTerminalCreatingRef.current = false
+          })
       }
     }
-  }, [currentProject, terminals, clients, projectId, createMainTerminal])
+  }, [currentProject?.settings.default_client, mainTerminal, clients, projectId, createMainTerminal])
+
+  // Handle selecting a default client from the terminal strip
+  const handleSelectDefaultClient = async (clientId: string) => {
+    if (!currentProject) return
+
+    // Save as project's default client
+    await projectApi.updateSettings({
+      project_id: projectId,
+      default_client: clientId,
+      auto_create_worktree: currentProject.settings.auto_create_worktree,
+      worktree_base_path: currentProject.settings.worktree_base_path,
+    })
+
+    // Reload project to get updated settings (this will trigger main terminal creation)
+    loadProject(projectId)
+  }
+
+  // Handle selecting main terminal
+  const handleSelectMainTerminal = () => {
+    if (mainTerminal) {
+      setActiveTerminal(mainTerminal.id)
+    }
+  }
+
+  // Check if main terminal is active
+  const isMainTerminalActive = mainTerminal ? activeTerminalId === mainTerminal.id : false
 
   // Load branches when project is loaded
   useEffect(() => {
@@ -345,11 +377,16 @@ function ProjectPage() {
         terminals={terminals}
         clients={clients}
         activeTerminalId={activeTerminalId}
+        mainTerminal={mainTerminal}
+        defaultClientId={currentProject.settings.default_client}
+        isMainTerminalActive={isMainTerminalActive}
         getActivity={getActivity}
         onSelectTerminal={setActiveTerminal}
+        onSelectMainTerminal={handleSelectMainTerminal}
         onCloseTerminal={closeTerminal}
         onRestartTerminal={restartTerminal}
         onNewTerminal={() => setIsCreateTerminalOpen(true)}
+        onSelectDefaultClient={handleSelectDefaultClient}
       />
 
       {/* Create Terminal Dialog */}
@@ -372,9 +409,16 @@ function ProjectPage() {
         clients={clients}
         open={isSettingsOpen}
         onOpenChange={setIsSettingsOpen}
-        onSaved={(updatedProject) => {
+        onSaved={async (updatedProject) => {
           // Reload project to get updated settings
           loadProject(updatedProject.id)
+
+          // Sync main terminal with new default_client if it changed
+          if (mainTerminal && updatedProject.settings.default_client) {
+            if (mainTerminal.client_id !== updatedProject.settings.default_client) {
+              await switchTerminalAgent(mainTerminal.id, updatedProject.settings.default_client)
+            }
+          }
         }}
       />
     </div>
@@ -570,3 +614,4 @@ function CreateTerminalDialog({
     </DialogContent>
   )
 }
+
