@@ -1,4 +1,4 @@
-import { Plus, X, RotateCcw, Loader2, Home, FolderOpen, GitBranch, TreeDeciduous, Bot } from "lucide-react"
+import { Plus, X, RotateCcw, Loader2, Home, FolderOpen, GitBranch, TreeDeciduous, Bot, Terminal } from "lucide-react"
 import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area"
 import { Button } from "@/components/ui/button"
 import {
@@ -283,7 +283,7 @@ const getModeInfo = (mode: TerminalMode) => {
     case "folder":
       return { icon: FolderOpen, color: "text-orange-400", bgColor: "bg-orange-500/20", label: "folder" }
     case "current_branch":
-      return { icon: GitBranch, color: "text-green-400", bgColor: "bg-green-500/20", label: "branch" }
+      return { icon: Terminal, color: "text-green-400", bgColor: "bg-green-500/20", label: "main" }
     case "worktree":
       return { icon: TreeDeciduous, color: "text-blue-400", bgColor: "bg-blue-500/20", label: "worktree" }
     default:

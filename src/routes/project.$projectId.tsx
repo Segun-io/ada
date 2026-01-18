@@ -1,6 +1,6 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
-import { useEffect, useState, useRef } from "react"
-import { Plus, Terminal as TerminalIcon, Settings, Loader2, Home, FolderOpen, GitBranch, TreeDeciduous } from "lucide-react"
+import { useEffect, useState, useRef, useCallback } from "react"
+import { Plus, Terminal as TerminalIcon, Settings, Loader2, Home, FolderOpen, TreeDeciduous, RefreshCw } from "lucide-react"
 import { listen } from "@tauri-apps/api/event"
 
 import { Button } from "@/components/ui/button"
@@ -27,7 +27,7 @@ import { useProjectStore } from "@/stores/project-store"
 import { useTerminalStore } from "@/stores/terminal-store"
 import { useClientStore } from "@/stores/client-store"
 import { gitApi, projectApi } from "@/lib/api"
-import type { BranchInfo, TerminalOutput, TerminalMode } from "@/lib/types"
+import type { BranchInfo, TerminalOutput, TerminalMode, WorktreeInfo } from "@/lib/types"
 import { TerminalView } from "@/components/terminal-view"
 import { TerminalStrip } from "@/components/terminal-strip"
 import { ProjectSettings } from "@/components/project-settings"
@@ -58,10 +58,12 @@ function ProjectPage() {
   } = useTerminalStore()
   const { clients, loadClients, detectInstalledClients } = useClientStore()
 
-  const [branches, setBranches] = useState<BranchInfo[]>([])
+  const [, setBranches] = useState<BranchInfo[]>([])
+  const [worktrees, setWorktrees] = useState<WorktreeInfo[]>([])
   const [currentBranch, setCurrentBranch] = useState<string>("")
   const [isCreateTerminalOpen, setIsCreateTerminalOpen] = useState(false)
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
+  const [isRefreshing, setIsRefreshing] = useState(false)
   const [, setTick] = useState(0)
   const [hasInitialized, setHasInitialized] = useState(false)
   const mainTerminalCreatingRef = useRef(false)
@@ -121,16 +123,62 @@ function ProjectPage() {
     }
   }
 
+  // Handle refreshing project state (checks for git init, etc.)
+  const handleRefreshProject = async () => {
+    setIsRefreshing(true)
+    try {
+      await loadProject(projectId)
+      // Also refresh git data
+      if (currentProject?.is_git_repo) {
+        await Promise.all([
+          gitApi.getBranches(projectId).then(setBranches),
+          gitApi.getCurrentBranch(projectId).then(setCurrentBranch),
+          gitApi.listWorktrees(projectId).then(setWorktrees),
+        ])
+      }
+    } catch (err) {
+      console.error("Failed to refresh project:", err)
+    } finally {
+      setIsRefreshing(false)
+    }
+  }
+
+  // Handle opening new terminal dialog (refresh project first)
+  const handleNewTerminal = async () => {
+    // Refresh project state first to detect any changes (e.g., git init)
+    setIsRefreshing(true)
+    try {
+      await loadProject(projectId)
+    } catch (err) {
+      console.error("Failed to refresh project:", err)
+    } finally {
+      setIsRefreshing(false)
+    }
+    setIsCreateTerminalOpen(true)
+  }
+
   // Check if main terminal is active
   const isMainTerminalActive = mainTerminal ? activeTerminalId === mainTerminal.id : false
 
-  // Load branches when project is loaded
+  // Load branches and worktrees when project is loaded
   useEffect(() => {
     if (currentProject) {
       gitApi.getBranches(projectId).then(setBranches).catch(console.error)
       gitApi.getCurrentBranch(projectId).then(setCurrentBranch).catch(console.error)
+      gitApi.listWorktrees(projectId).then(setWorktrees).catch(console.error)
     }
   }, [currentProject, projectId])
+
+  // Callback to refresh branches and worktrees (for dialog)
+  const refreshGitData = useCallback(async () => {
+    const [branchesData, worktreesData] = await Promise.all([
+      gitApi.getBranches(projectId),
+      gitApi.listWorktrees(projectId),
+    ])
+    setBranches(branchesData)
+    setWorktrees(worktreesData)
+    return { branches: branchesData, worktrees: worktreesData }
+  }, [projectId])
 
   // Listen for terminal output events
   useEffect(() => {
@@ -235,7 +283,7 @@ function ProjectPage() {
       case "folder":
         return { icon: FolderOpen, color: "text-orange-400", label: "folder" }
       case "current_branch":
-        return { icon: GitBranch, color: "text-green-400", label: "branch" }
+        return { icon: TerminalIcon, color: "text-green-400", label: "main" }
       case "worktree":
         return { icon: TreeDeciduous, color: "text-blue-400", label: "worktree" }
       default:
@@ -321,9 +369,20 @@ function ProjectPage() {
         <div className="flex items-center gap-2">
           <Button
             variant="ghost"
+            size="icon"
+            className="h-7 w-7"
+            onClick={handleRefreshProject}
+            disabled={isRefreshing}
+            title="Refresh project state"
+          >
+            <RefreshCw className={`h-4 w-4 ${isRefreshing ? "animate-spin" : ""}`} />
+          </Button>
+          <Button
+            variant="ghost"
             size="sm"
             className="h-7 text-xs"
-            onClick={() => setIsCreateTerminalOpen(true)}
+            onClick={handleNewTerminal}
+            disabled={isRefreshing}
           >
             new code terminal <Plus className="ml-1 h-3 w-3" />
           </Button>
@@ -385,7 +444,7 @@ function ProjectPage() {
         onSelectMainTerminal={handleSelectMainTerminal}
         onCloseTerminal={closeTerminal}
         onRestartTerminal={restartTerminal}
-        onNewTerminal={() => setIsCreateTerminalOpen(true)}
+        onNewTerminal={handleNewTerminal}
         onSelectDefaultClient={handleSelectDefaultClient}
       />
 
@@ -393,9 +452,14 @@ function ProjectPage() {
       <Dialog open={isCreateTerminalOpen} onOpenChange={setIsCreateTerminalOpen}>
         <CreateTerminalDialog
           projectId={projectId}
+          projectPath={currentProject.path}
+          isGitRepo={currentProject.is_git_repo}
           clients={clients}
-          branches={branches}
+          defaultClientId={currentProject.settings.default_client}
+          existingTerminalNames={terminals.map(t => t.name)}
+          worktrees={worktrees}
           onClose={() => setIsCreateTerminalOpen(false)}
+          onRefreshData={refreshGitData}
           onCreate={async (request) => {
             await createTerminal(request)
             setIsCreateTerminalOpen(false)
@@ -427,9 +491,14 @@ function ProjectPage() {
 
 interface CreateTerminalDialogProps {
   projectId: string
+  projectPath: string
+  isGitRepo: boolean
   clients: Array<{ id: string; name: string; installed: boolean }>
-  branches: BranchInfo[]
+  defaultClientId: string | null
+  existingTerminalNames: string[]
+  worktrees: WorktreeInfo[]
   onClose: () => void
+  onRefreshData: () => Promise<{ branches: BranchInfo[]; worktrees: WorktreeInfo[] }>
   onCreate: (request: {
     project_id: string
     name: string
@@ -442,36 +511,167 @@ interface CreateTerminalDialogProps {
 
 function CreateTerminalDialog({
   projectId,
+  projectPath,
+  isGitRepo,
   clients,
-  branches,
+  defaultClientId,
+  existingTerminalNames,
+  worktrees: initialWorktrees,
   onClose,
+  onRefreshData,
   onCreate,
 }: CreateTerminalDialogProps) {
   const [name, setName] = useState("")
-  const [clientId, setClientId] = useState("")
+  const [clientId, setClientId] = useState(defaultClientId || "")
   const [mode, setMode] = useState<"folder" | "current_branch" | "worktree">("current_branch")
   const [folderPath, setFolderPath] = useState("")
-  const [worktreeBranch, setWorktreeBranch] = useState("")
+  const [selectedWorktree, setSelectedWorktree] = useState("")
+  const [worktreeMode, setWorktreeMode] = useState<"existing" | "new">("existing")
+  const [baseBranch, setBaseBranch] = useState("")
+  const [newBranchName, setNewBranchName] = useState("")
   const [isCreating, setIsCreating] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [branches, setBranches] = useState<BranchInfo[]>([])
+  const [worktrees, setWorktrees] = useState<WorktreeInfo[]>(initialWorktrees)
+  const [isLoading, setIsLoading] = useState(true)
 
   const installedClients = clients.filter((c) => c.installed)
 
+  // Refresh branches and worktrees when dialog opens
+  useEffect(() => {
+    const loadData = async () => {
+      setIsLoading(true)
+      try {
+        const data = await onRefreshData()
+        setBranches(data.branches)
+        setWorktrees(data.worktrees)
+      } catch (err) {
+        console.error("Failed to load data:", err)
+      } finally {
+        setIsLoading(false)
+      }
+    }
+    loadData()
+  }, [onRefreshData])
+
+  // Generate default terminal name based on mode
+  const generateDefaultName = () => {
+    let baseName: string
+
+    switch (mode) {
+      case "current_branch":
+        baseName = "main"
+        break
+      case "folder":
+        // Use the last segment of the folder path, or "folder" as fallback
+        if (folderPath) {
+          const segments = folderPath.split("/").filter(Boolean)
+          baseName = segments[segments.length - 1] || "folder"
+        } else {
+          baseName = "folder"
+        }
+        break
+      case "worktree":
+        // Use the branch name (either from existing worktree or new branch)
+        if (worktreeMode === "existing" && selectedWorktree) {
+          const wt = worktrees.find(w => w.path === selectedWorktree)
+          if (wt?.branch) {
+            // Use last segment of branch name (e.g., "feature/auth" -> "auth")
+            const segments = wt.branch.split("/").filter(Boolean)
+            baseName = segments[segments.length - 1] || "worktree"
+          } else {
+            baseName = "worktree"
+          }
+        } else if (worktreeMode === "new" && newBranchName) {
+          // Use last segment of new branch name
+          const segments = newBranchName.split("/").filter(Boolean)
+          baseName = segments[segments.length - 1] || "worktree"
+        } else {
+          baseName = "worktree"
+        }
+        break
+      default:
+        baseName = "terminal"
+    }
+
+    // Sanitize base name (replace non-alphanumeric with dash, lowercase)
+    baseName = baseName.toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-")
+
+    // Find unique name with counter
+    let counter = 1
+    let candidateName = `${baseName}-${counter}`
+    while (existingTerminalNames.includes(candidateName)) {
+      counter++
+      candidateName = `${baseName}-${counter}`
+    }
+    return candidateName
+  }
+
+  // Validate terminal name uniqueness
+  const nameError = name && existingTerminalNames.includes(name)
+    ? "A terminal with this name already exists"
+    : null
+
+  const handleBrowseFolder = async () => {
+    const { open } = await import("@tauri-apps/plugin-dialog")
+    const selected = await open({
+      directory: true,
+      multiple: false,
+      defaultPath: projectPath,
+      title: "Select Folder",
+    })
+
+    if (selected) {
+      // Make path relative to project
+      if (selected.startsWith(projectPath)) {
+        const relativePath = selected.slice(projectPath.length).replace(/^[/\\]/, "")
+        setFolderPath(relativePath || ".")
+      } else {
+        setError("Please select a folder within the project directory")
+      }
+    }
+  }
+
   const handleCreate = async () => {
-    if (!name || !clientId) return
+    if (!clientId) return
     if (mode === "folder" && !folderPath) return
-    if (mode === "worktree" && !worktreeBranch) return
+    if (mode === "worktree") {
+      if (worktreeMode === "existing" && !selectedWorktree) return
+      if (worktreeMode === "new" && (!baseBranch || !newBranchName)) return
+    }
+
+    // Generate name if not provided
+    const finalName = name.trim() || generateDefaultName()
+
+    // Final validation
+    if (existingTerminalNames.includes(finalName)) {
+      setError("A terminal with this name already exists")
+      return
+    }
 
     setIsCreating(true)
     setError(null)
     try {
+      // Determine worktree branch
+      let worktreeBranch: string | null = null
+      if (mode === "worktree") {
+        if (worktreeMode === "existing") {
+          const wt = worktrees.find(w => w.path === selectedWorktree)
+          worktreeBranch = wt?.branch || null
+        } else {
+          // For new worktree, we pass a special format: wt-baseBranch/newBranchName
+          // The backend will handle creating the worktree with git worktree add -b newBranchName .worktrees/newBranchName baseBranch
+          worktreeBranch = `wt-${baseBranch}/${newBranchName}`
+        }
+      }
+
       await onCreate({
         project_id: projectId,
-        name,
+        name: finalName,
         client_id: clientId,
         mode,
         folder_path: mode === "folder" ? folderPath : null,
-        worktree_branch: mode === "worktree" ? worktreeBranch : null,
+        worktree_branch: worktreeBranch,
       })
     } catch (err) {
       console.error("Failed to create terminal:", err)
@@ -481,11 +681,22 @@ function CreateTerminalDialog({
     }
   }
 
-  const isValid = name && clientId && (
+  const isValid = clientId && !nameError && (
     mode === "current_branch" ||
     (mode === "folder" && folderPath) ||
-    (mode === "worktree" && worktreeBranch)
+    (mode === "worktree" && (
+      (worktreeMode === "existing" && selectedWorktree) ||
+      (worktreeMode === "new" && baseBranch && newBranchName)
+    ))
   )
+
+  // Common input props to disable autocorrect
+  const inputProps = {
+    autoComplete: "off",
+    autoCorrect: "off",
+    spellCheck: false,
+    autoCapitalize: "off",
+  } as const
 
   return (
     <DialogContent className="sm:max-w-md">
@@ -497,17 +708,21 @@ function CreateTerminalDialog({
       </DialogHeader>
 
       <div className="grid gap-4 py-4">
-        {/* Common fields */}
+        {/* Terminal Name (optional) */}
         <div className="grid gap-2">
-          <Label htmlFor="terminal-name">Terminal Name</Label>
+          <Label htmlFor="terminal-name">Terminal Name <span className="text-muted-foreground text-xs">(optional)</span></Label>
           <Input
             id="terminal-name"
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="feature-auth"
+            placeholder={generateDefaultName()}
+            className={nameError ? "border-destructive" : ""}
+            {...inputProps}
           />
+          {nameError && <p className="text-xs text-destructive">{nameError}</p>}
         </div>
 
+        {/* AI Client */}
         <div className="grid gap-2">
           <Label htmlFor="client">AI Client</Label>
           <Select value={clientId} onValueChange={setClientId}>
@@ -533,66 +748,146 @@ function CreateTerminalDialog({
         {/* Mode selection tabs */}
         <div className="grid gap-2">
           <Label>Terminal Mode</Label>
-          <Tabs value={mode} onValueChange={(v) => setMode(v as typeof mode)}>
-            <TabsList className="grid w-full grid-cols-3">
+          <Tabs value={mode} onValueChange={(v) => { setMode(v as typeof mode); setError(null) }}>
+            <TabsList className={`grid w-full ${isGitRepo ? "grid-cols-3" : "grid-cols-2"}`}>
               <TabsTrigger value="current_branch" className="flex items-center gap-1 text-xs">
-                <GitBranch className="h-3 w-3" />
-                Branch
+                <Home className="h-3 w-3" />
+                Main
               </TabsTrigger>
               <TabsTrigger value="folder" className="flex items-center gap-1 text-xs">
                 <FolderOpen className="h-3 w-3" />
                 Folder
               </TabsTrigger>
-              <TabsTrigger value="worktree" className="flex items-center gap-1 text-xs">
-                <TreeDeciduous className="h-3 w-3" />
-                Worktree
-              </TabsTrigger>
+              {isGitRepo && (
+                <TabsTrigger value="worktree" className="flex items-center gap-1 text-xs">
+                  <TreeDeciduous className="h-3 w-3" />
+                  Worktree
+                </TabsTrigger>
+              )}
             </TabsList>
 
             <TabsContent value="current_branch" className="mt-3">
               <p className="text-xs text-muted-foreground">
-                Runs at project root on the current branch.
+                Runs at project root on the current branch. Same as the main terminal but can be closed.
               </p>
             </TabsContent>
 
             <TabsContent value="folder" className="mt-3 space-y-2">
               <Label htmlFor="folder-path">Folder Path</Label>
-              <Input
-                id="folder-path"
-                value={folderPath}
-                onChange={(e) => setFolderPath(e.target.value)}
-                placeholder="src/components"
-              />
+              <div className="flex gap-2">
+                <Input
+                  id="folder-path"
+                  value={folderPath}
+                  onChange={(e) => setFolderPath(e.target.value)}
+                  placeholder="src/components"
+                  className="flex-1"
+                  {...inputProps}
+                />
+                <Button variant="outline" onClick={handleBrowseFolder}>
+                  Browse
+                </Button>
+              </div>
               <p className="text-xs text-muted-foreground">
                 Runs in a subfolder of the project.
               </p>
             </TabsContent>
 
-            <TabsContent value="worktree" className="mt-3 space-y-2">
-              <Label htmlFor="worktree-branch">Branch</Label>
-              <Select value={worktreeBranch} onValueChange={setWorktreeBranch}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Select or enter a branch" />
-                </SelectTrigger>
-                <SelectContent>
-                  {branches
-                    .filter((b) => !b.is_remote)
-                    .map((b) => (
-                      <SelectItem key={b.name} value={b.name}>
-                        {b.name} {b.is_current && "(current)"}
-                      </SelectItem>
-                    ))}
-                </SelectContent>
-              </Select>
-              <Input
-                value={worktreeBranch}
-                onChange={(e) => setWorktreeBranch(e.target.value)}
-                placeholder="Or type a new branch name"
-              />
-              <p className="text-xs text-muted-foreground">
-                Runs in an isolated git worktree for branch work.
-              </p>
-            </TabsContent>
+            {isGitRepo && (
+              <TabsContent value="worktree" className="mt-3 space-y-3">
+                {isLoading ? (
+                <div className="flex items-center justify-center py-4">
+                  <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                  <span className="text-xs text-muted-foreground">Loading...</span>
+                </div>
+              ) : (
+                <>
+                  {/* Worktree mode toggle */}
+                  <Tabs
+                    value={worktreeMode}
+                    onValueChange={(v) => {
+                      setWorktreeMode(v as typeof worktreeMode)
+                      setError(null) // Clear error when switching tabs
+                    }}
+                  >
+                    <TabsList className="grid w-full grid-cols-2 h-8">
+                      <TabsTrigger value="existing" className="text-xs">Use Existing</TabsTrigger>
+                      <TabsTrigger value="new" className="text-xs">Create New</TabsTrigger>
+                    </TabsList>
+
+                    <TabsContent value="existing" className="mt-2 space-y-2">
+                      {worktrees.length === 0 ? (
+                        <p className="text-xs text-muted-foreground py-2">
+                          No worktrees available. Create a new one instead.
+                        </p>
+                      ) : (
+                        <>
+                          <Label>Select Worktree</Label>
+                          <Select value={selectedWorktree} onValueChange={setSelectedWorktree}>
+                            <SelectTrigger>
+                              <SelectValue placeholder="Select a worktree" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {worktrees.map((wt) => (
+                                <SelectItem key={wt.path} value={wt.path}>
+                                  {wt.branch} <span className="text-muted-foreground">({wt.path.split("/").pop()})</span>
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </>
+                      )}
+                    </TabsContent>
+
+                    <TabsContent value="new" className="mt-2 space-y-2">
+                      <div className="space-y-1">
+                        <Label>Base Branch</Label>
+                        {branches.filter(b => !b.is_remote).length === 0 ? (
+                          <p className="text-xs text-muted-foreground py-2">
+                            No local branches available.
+                          </p>
+                        ) : (
+                          <Select value={baseBranch} onValueChange={setBaseBranch}>
+                            <SelectTrigger>
+                              <SelectValue placeholder="Select base branch" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {branches.filter(b => !b.is_remote).map((b) => (
+                                <SelectItem key={b.name} value={b.name}>
+                                  {b.name} {b.is_current && "(current)"}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        )}
+                      </div>
+
+                      <div className="space-y-1">
+                        <Label>New Branch Name</Label>
+                        <Input
+                          value={newBranchName}
+                          onChange={(e) => setNewBranchName(e.target.value.replace(/\s+/g, "-"))}
+                          placeholder="feature/my-feature"
+                          {...inputProps}
+                        />
+                      </div>
+
+                      {baseBranch && newBranchName && (
+                        <div className="rounded-md bg-muted p-2 space-y-1">
+                          <p className="text-xs font-medium">Worktree will be created:</p>
+                          <code className="text-xs block break-all">
+                            wt-{baseBranch}/{newBranchName}
+                          </code>
+                          <p className="text-[10px] text-muted-foreground">
+                            Branch <span className="font-mono">{newBranchName}</span> from <span className="font-mono">{baseBranch}</span>
+                          </p>
+                        </div>
+                      )}
+                    </TabsContent>
+                  </Tabs>
+                </>
+              )}
+              </TabsContent>
+            )}
           </Tabs>
         </div>
 
@@ -607,7 +902,7 @@ function CreateTerminalDialog({
         <Button variant="outline" onClick={onClose}>
           Cancel
         </Button>
-        <Button onClick={handleCreate} disabled={!isValid || isCreating}>
+        <Button onClick={handleCreate} disabled={!isValid || isCreating || isLoading}>
           {isCreating ? "Creating..." : "Create Terminal"}
         </Button>
       </DialogFooter>

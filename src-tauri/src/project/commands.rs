@@ -16,43 +16,6 @@ fn has_commits(repo_path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Create an initial commit with a .gitkeep file
-fn create_initial_commit(repo_path: &Path) -> Result<()> {
-    // Create a .gitkeep file if the directory is empty or has no tracked files
-    let gitkeep_path = repo_path.join(".gitkeep");
-    if !gitkeep_path.exists() {
-        std::fs::write(&gitkeep_path, "# This file ensures the repository has an initial commit\n")?;
-    }
-
-    // Stage the file
-    let output = std::process::Command::new("git")
-        .args(["add", ".gitkeep"])
-        .current_dir(repo_path)
-        .output()?;
-
-    if !output.status.success() {
-        return Err(Error::GitError(
-            String::from_utf8_lossy(&output.stderr).to_string()
-        ));
-    }
-
-    // Create the commit
-    let output = std::process::Command::new("git")
-        .args(["commit", "-m", "Initial commit (created by Ada)"])
-        .current_dir(repo_path)
-        .output()?;
-
-    if !output.status.success() {
-        // Check if the error is because there's nothing to commit (files already committed)
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if !stderr.contains("nothing to commit") {
-            return Err(Error::GitError(stderr.to_string()));
-        }
-    }
-
-    Ok(())
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdateProjectSettingsRequest {
     pub project_id: String,
@@ -182,6 +145,102 @@ fn add_worktrees_to_gitignore(repo_path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Ensure a git repository is properly configured for Ada:
+/// - Has at least one commit
+/// - Has .worktrees/ in .gitignore
+/// Returns Ok(true) if the repo is properly configured, Ok(false) if not a git repo
+fn ensure_git_repo_configured(repo_path: &Path) -> Result<bool> {
+    eprintln!("[Ada] ensure_git_repo_configured called for: {:?}", repo_path);
+
+    let git_dir = repo_path.join(".git");
+    // .git can be a directory (normal repo) or a file (worktree/submodule)
+    if !git_dir.exists() {
+        eprintln!("[Ada] .git does not exist at {:?}", git_dir);
+        return Ok(false);
+    }
+    eprintln!("[Ada] .git exists (is_dir: {}, is_file: {})", git_dir.is_dir(), git_dir.is_file());
+
+    // Add .worktrees to .gitignore
+    eprintln!("[Ada] Adding .worktrees to .gitignore");
+    add_worktrees_to_gitignore(repo_path)?;
+
+    // Check if repo has commits - if not, create initial commit with all necessary files
+    let has_existing_commits = has_commits(repo_path);
+    eprintln!("[Ada] has_commits: {}", has_existing_commits);
+
+    if !has_existing_commits {
+        // Create .gitkeep to ensure we have something to commit
+        let gitkeep_path = repo_path.join(".gitkeep");
+        eprintln!("[Ada] Creating .gitkeep at {:?}", gitkeep_path);
+        if !gitkeep_path.exists() {
+            std::fs::write(&gitkeep_path, "# This file ensures the repository has an initial commit\n")?;
+            eprintln!("[Ada] .gitkeep created successfully");
+        } else {
+            eprintln!("[Ada] .gitkeep already exists");
+        }
+
+        // Stage all Ada-related files
+        eprintln!("[Ada] Staging .gitignore and .gitkeep");
+        let output = std::process::Command::new("git")
+            .args(["add", ".gitignore", ".gitkeep"])
+            .current_dir(repo_path)
+            .output()?;
+
+        if !output.status.success() {
+            let err_msg = format!("Failed to stage files: {}", String::from_utf8_lossy(&output.stderr));
+            eprintln!("[Ada] {}", err_msg);
+            return Err(Error::GitError(err_msg));
+        }
+        eprintln!("[Ada] Files staged successfully");
+
+        // Create the initial commit
+        eprintln!("[Ada] Creating initial commit");
+        let output = std::process::Command::new("git")
+            .args(["commit", "-m", "Initial commit (created by Ada)"])
+            .current_dir(repo_path)
+            .output()?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            eprintln!("[Ada] Commit stderr: {}", stderr);
+            // Ignore "nothing to commit" - means files are already committed
+            if !stderr.contains("nothing to commit") {
+                return Err(Error::GitError(
+                    format!("Failed to create initial commit: {}", stderr)
+                ));
+            }
+        } else {
+            eprintln!("[Ada] Initial commit created successfully");
+        }
+    } else {
+        // Repo already has commits - just ensure .gitignore changes are committed
+        eprintln!("[Ada] Repo already has commits, checking .gitignore status");
+        let output = std::process::Command::new("git")
+            .args(["status", "--porcelain", ".gitignore"])
+            .current_dir(repo_path)
+            .output()?;
+
+        let status = String::from_utf8_lossy(&output.stdout);
+        eprintln!("[Ada] .gitignore status: '{}'", status.trim());
+        if !status.is_empty() {
+            // .gitignore has changes, stage and commit them
+            eprintln!("[Ada] Committing .gitignore changes");
+            let _ = std::process::Command::new("git")
+                .args(["add", ".gitignore"])
+                .current_dir(repo_path)
+                .output();
+
+            let _ = std::process::Command::new("git")
+                .args(["commit", "-m", "Add .worktrees to .gitignore (Ada)"])
+                .current_dir(repo_path)
+                .output();
+        }
+    }
+
+    eprintln!("[Ada] ensure_git_repo_configured completed successfully");
+    Ok(true)
+}
+
 /// Open any folder as a project (respects existing git status)
 #[tauri::command]
 pub async fn open_project(
@@ -205,15 +264,8 @@ pub async fn open_project(
         }
     }
 
-    // Check if it's a git repository
-    let git_dir = path.join(".git");
-    let is_git_repo = git_dir.exists();
-
-    if is_git_repo {
-        // For git repos, add .worktrees to .gitignore if not present
-        add_worktrees_to_gitignore(&path)?;
-    }
-    // For non-git folders, we just open them as-is
+    // Check if it's a git repository and ensure it's properly configured
+    let is_git_repo = ensure_git_repo_configured(&path)?;
 
     let project = AdaProject::new(path, is_git_repo);
 
@@ -240,11 +292,45 @@ pub async fn get_project(
     state: State<'_, AppState>,
     project_id: String,
 ) -> Result<AdaProject> {
-    let projects = state.projects.read();
-    projects
-        .get(&project_id)
-        .cloned()
-        .ok_or_else(|| Error::ProjectNotFound(project_id))
+    eprintln!("[Ada] get_project called for: {}", project_id);
+
+    // First, get the project from state
+    let project = {
+        let projects = state.projects.read();
+        projects
+            .get(&project_id)
+            .cloned()
+            .ok_or_else(|| Error::ProjectNotFound(project_id.clone()))?
+    };
+
+    eprintln!("[Ada] Project found: {} at {:?}, is_git_repo: {}", project.name, project.path, project.is_git_repo);
+
+    // Always check and configure git repo if .git exists
+    // This handles both: transitioning from non-git to git, AND ensuring existing git repos are properly configured
+    eprintln!("[Ada] Checking git configuration...");
+    let is_now_git = ensure_git_repo_configured(&project.path)?;
+    eprintln!("[Ada] ensure_git_repo_configured returned: {}", is_now_git);
+
+    // Update state if git status changed
+    if is_now_git && !project.is_git_repo {
+        eprintln!("[Ada] Project is now a git repo, updating state...");
+        let mut projects = state.projects.write();
+        if let Some(p) = projects.get_mut(&project_id) {
+            p.is_git_repo = true;
+            p.updated_at = chrono::Utc::now();
+
+            let updated_project = p.clone();
+            drop(projects); // Release lock before saving
+
+            // Persist the change
+            state.save_project(&updated_project)?;
+            eprintln!("[Ada] Project state updated and saved");
+
+            return Ok(updated_project);
+        }
+    }
+
+    Ok(project)
 }
 
 #[tauri::command]

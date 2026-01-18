@@ -54,21 +54,36 @@ pub async fn create_terminal(
         }
         TerminalMode::Worktree => {
             // Run in an isolated worktree
-            let branch = request.worktree_branch.as_ref().ok_or_else(|| {
+            let branch_spec = request.worktree_branch.as_ref().ok_or_else(|| {
                 Error::InvalidRequest("Worktree mode requires worktree_branch".into())
             })?;
+
+            // Parse branch spec - could be "wt-baseBranch/newBranchName" or just a branch name
+            let actual_branch = if branch_spec.starts_with("wt-") {
+                // Extract the new branch name from the format
+                let rest = branch_spec.strip_prefix("wt-").unwrap();
+                if let Some(slash_pos) = rest.find('/') {
+                    rest[slash_pos + 1..].to_string()
+                } else {
+                    branch_spec.clone()
+                }
+            } else {
+                branch_spec.clone()
+            };
+
             let worktree_base = project.settings.worktree_base_path
                 .clone()
                 .unwrap_or_else(|| project.path.join(".worktrees"));
 
-            let worktree_path = worktree_base.join(branch.replace('/', "-"));
+            // Use the actual branch name for the worktree path
+            let worktree_path = worktree_base.join(actual_branch.replace('/', "-"));
 
             // Create worktree if it doesn't exist
             if !worktree_path.exists() {
-                git::create_worktree_internal(&project.path, branch, &worktree_path)?;
+                git::create_worktree_internal(&project.path, branch_spec, &worktree_path)?;
             }
 
-            (worktree_path.clone(), Some(worktree_path), Some(branch.clone()), None)
+            (worktree_path.clone(), Some(worktree_path), Some(actual_branch), None)
         }
     };
 
