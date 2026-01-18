@@ -3,6 +3,7 @@ import { useEffect, useState, useRef, useCallback } from "react"
 import { Plus, Terminal as TerminalIcon, Settings, RefreshCw, Home, FolderOpen, TreeDeciduous } from "lucide-react"
 import { listen } from "@tauri-apps/api/event"
 import { useSuspenseQuery, useQueryClient } from "@tanstack/react-query"
+import { useForm } from "@tanstack/react-form"
 
 import { Button } from "@/components/ui/button"
 import {
@@ -40,7 +41,7 @@ import {
   useSwitchTerminalAgent,
   useUpdateProjectSettings,
 } from "@/lib/queries"
-import type { BranchInfo, TerminalOutput, TerminalMode, WorktreeInfo } from "@/lib/types"
+import type { BranchInfo, TerminalOutput, WorktreeInfo } from "@/lib/types"
 import { TerminalView } from "@/components/terminal-view"
 import { TerminalStrip } from "@/components/terminal-strip"
 import { ProjectSettings } from "@/components/project-settings"
@@ -101,7 +102,6 @@ function ProjectPage() {
   })
 
   // Mutations
-  const createTerminalMutation = useCreateTerminal()
   const createMainTerminalMutation = useCreateMainTerminal()
   const closeTerminalMutation = useCloseTerminal()
   const restartTerminalMutation = useRestartTerminal()
@@ -194,18 +194,24 @@ function ProjectPage() {
       const defaultClient = clients.find(c => c.id === currentProject.settings.default_client && c.installed)
       if (defaultClient) {
         mainTerminalCreatingRef.current = true
-        createMainTerminalMutation.mutateAsync({ projectId, clientId: defaultClient.id })
-          .catch(console.error)
-          .finally(() => {
-            mainTerminalCreatingRef.current = false
-          })
+        createMainTerminalMutation.mutate(
+          { projectId, clientId: defaultClient.id },
+          {
+            onSettled: () => {
+              mainTerminalCreatingRef.current = false
+            },
+            onError: (err) => {
+              console.error("Failed to create main terminal:", err)
+            },
+          }
+        )
       }
     }
   }, [currentProject.settings.default_client, mainTerminal, clients, projectId, createMainTerminalMutation])
 
   // Handle selecting a default client from the terminal strip
-  const handleSelectDefaultClient = async (clientId: string) => {
-    await updateProjectSettingsMutation.mutateAsync({
+  const handleSelectDefaultClient = (clientId: string) => {
+    updateProjectSettingsMutation.mutate({
       project_id: projectId,
       default_client: clientId,
       auto_create_worktree: currentProject.settings.auto_create_worktree,
@@ -249,24 +255,39 @@ function ProjectPage() {
   }
 
   // Handle close terminal
-  const handleCloseTerminal = async (terminalId: string) => {
+  const handleCloseTerminal = (terminalId: string) => {
     const terminal = terminals.find(t => t.id === terminalId)
     if (terminal?.is_main) return
 
-    await closeTerminalMutation.mutateAsync({ terminalId, projectId })
-    removeTerminal(terminalId, mainTerminal?.id ?? null, terminals.filter(t => t.id !== terminalId).map(t => t.id))
+    closeTerminalMutation.mutate(
+      { terminalId, projectId },
+      {
+        onSuccess: () => {
+          removeTerminal(terminalId, mainTerminal?.id ?? null, terminals.filter(t => t.id !== terminalId).map(t => t.id))
+        },
+      }
+    )
   }
 
   // Handle restart terminal
-  const handleRestartTerminal = async (terminalId: string) => {
-    await restartTerminalMutation.mutateAsync(terminalId)
-    resetActivityToIdle(terminalId)
+  const handleRestartTerminal = (terminalId: string) => {
+    restartTerminalMutation.mutate(terminalId, {
+      onSuccess: () => {
+        resetActivityToIdle(terminalId)
+      },
+    })
   }
 
   // Handle switch agent
-  const handleSwitchAgent = async (terminalId: string, newClientId: string) => {
-    await switchTerminalAgentMutation.mutateAsync({ terminalId, newClientId })
-    clearTerminalOutput(terminalId)
+  const handleSwitchAgent = (terminalId: string, newClientId: string) => {
+    switchTerminalAgentMutation.mutate(
+      { terminalId, newClientId },
+      {
+        onSuccess: () => {
+          clearTerminalOutput(terminalId)
+        },
+      }
+    )
   }
 
   // Check if main terminal is active
@@ -399,24 +420,22 @@ function ProjectPage() {
       />
 
       {/* Create Terminal Dialog */}
-      <Dialog open={isCreateTerminalOpen} onOpenChange={setIsCreateTerminalOpen}>
-        <CreateTerminalDialog
-          projectId={projectId}
-          projectPath={currentProject.path}
-          isGitRepo={currentProject.is_git_repo}
-          clients={clients}
-          defaultClientId={currentProject.settings.default_client}
-          existingTerminalNames={terminals.map(t => t.name)}
-          worktrees={worktrees}
-          branches={branches}
-          onClose={() => setIsCreateTerminalOpen(false)}
-          onCreate={async (request) => {
-            const newTerminal = await createTerminalMutation.mutateAsync(request)
-            setActiveTerminal(newTerminal.id)
-            setIsCreateTerminalOpen(false)
-          }}
-        />
-      </Dialog>
+      <CreateTerminalDialog
+        open={isCreateTerminalOpen}
+        onOpenChange={setIsCreateTerminalOpen}
+        projectId={projectId}
+        projectPath={currentProject.path}
+        isGitRepo={currentProject.is_git_repo}
+        clients={clients}
+        defaultClientId={currentProject.settings.default_client}
+        existingTerminalNames={terminals.map(t => t.name)}
+        worktrees={worktrees}
+        branches={branches}
+        onCreated={(terminalId) => {
+          setActiveTerminal(terminalId)
+          setIsCreateTerminalOpen(false)
+        }}
+      />
 
       {/* Project Settings Dialog */}
       <ProjectSettings
@@ -437,7 +456,20 @@ function ProjectPage() {
   )
 }
 
+interface CreateTerminalFormValues {
+  name: string
+  clientId: string
+  mode: "folder" | "current_branch" | "worktree"
+  folderPath: string
+  selectedWorktree: string
+  worktreeMode: "existing" | "new"
+  baseBranch: string
+  newBranchName: string
+}
+
 interface CreateTerminalDialogProps {
+  open: boolean
+  onOpenChange: (open: boolean) => void
   projectId: string
   projectPath: string
   isGitRepo: boolean
@@ -446,18 +478,12 @@ interface CreateTerminalDialogProps {
   existingTerminalNames: string[]
   worktrees: WorktreeInfo[]
   branches: BranchInfo[]
-  onClose: () => void
-  onCreate: (request: {
-    project_id: string
-    name: string
-    client_id: string
-    mode: TerminalMode
-    folder_path: string | null
-    worktree_branch: string | null
-  }) => Promise<void>
+  onCreated: (terminalId: string) => void
 }
 
 function CreateTerminalDialog({
+  open,
+  onOpenChange,
   projectId,
   projectPath,
   isGitRepo,
@@ -466,49 +492,102 @@ function CreateTerminalDialog({
   existingTerminalNames,
   worktrees,
   branches,
-  onClose,
-  onCreate,
+  onCreated,
 }: CreateTerminalDialogProps) {
-  const [name, setName] = useState("")
-  const [clientId, setClientId] = useState(defaultClientId || "")
-  const [mode, setMode] = useState<"folder" | "current_branch" | "worktree">("current_branch")
-  const [folderPath, setFolderPath] = useState("")
-  const [selectedWorktree, setSelectedWorktree] = useState("")
-  const [worktreeMode, setWorktreeMode] = useState<"existing" | "new">("existing")
-  const [baseBranch, setBaseBranch] = useState("")
-  const [newBranchName, setNewBranchName] = useState("")
-  const [isCreating, setIsCreating] = useState(false)
+  const createTerminalMutation = useCreateTerminal()
   const [error, setError] = useState<string | null>(null)
+
+  const getDefaultValues = useCallback((): CreateTerminalFormValues => ({
+    name: "",
+    clientId: defaultClientId || "",
+    mode: "current_branch",
+    folderPath: "",
+    selectedWorktree: "",
+    worktreeMode: "existing",
+    baseBranch: "",
+    newBranchName: "",
+  }), [defaultClientId])
+
+  const form = useForm({
+    defaultValues: getDefaultValues(),
+    onSubmit: ({ value }) => {
+      const finalName = value.name.trim() || generateDefaultName(value)
+
+      if (existingTerminalNames.includes(finalName)) {
+        setError("A terminal with this name already exists")
+        return
+      }
+
+      let worktreeBranch: string | null = null
+      if (value.mode === "worktree") {
+        if (value.worktreeMode === "existing") {
+          const wt = worktrees.find(w => w.path === value.selectedWorktree)
+          worktreeBranch = wt?.branch || null
+        } else {
+          worktreeBranch = `wt-${value.baseBranch}/${value.newBranchName}`
+        }
+      }
+
+      setError(null)
+      createTerminalMutation.mutate(
+        {
+          project_id: projectId,
+          name: finalName,
+          client_id: value.clientId,
+          mode: value.mode,
+          folder_path: value.mode === "folder" ? value.folderPath : null,
+          worktree_branch: worktreeBranch,
+        },
+        {
+          onSuccess: (newTerminal) => {
+            onCreated(newTerminal.id)
+          },
+          onError: (err) => {
+            console.error("Failed to create terminal:", err)
+            setError(String(err))
+          },
+        }
+      )
+    },
+  })
+
+  // Reset form when dialog opens
+  useEffect(() => {
+    if (open) {
+      form.reset(getDefaultValues())
+      setError(null)
+    }
+  }, [open, form, getDefaultValues])
 
   const installedClients = clients.filter((c) => c.installed)
 
   // Generate default terminal name based on mode
-  const generateDefaultName = () => {
+  const generateDefaultName = (values: CreateTerminalFormValues) => {
     let baseName: string
 
-    switch (mode) {
+    switch (values.mode) {
       case "current_branch":
         baseName = "main"
         break
       case "folder":
-        if (folderPath) {
-          const segments = folderPath.split("/").filter(Boolean)
+        if (values.folderPath) {
+          const segments = values.folderPath.split("/").filter(Boolean)
           baseName = segments[segments.length - 1] || "folder"
         } else {
           baseName = "folder"
         }
         break
       case "worktree":
-        if (worktreeMode === "existing" && selectedWorktree) {
-          const wt = worktrees.find(w => w.path === selectedWorktree)
+        if (values.worktreeMode === "existing" && values.selectedWorktree) {
+          const wt = worktrees.find(w => w.path === values.selectedWorktree)
           if (wt?.branch) {
             const segments = wt.branch.split("/").filter(Boolean)
             baseName = segments[segments.length - 1] || "worktree"
           } else {
             baseName = "worktree"
           }
-        } else if (worktreeMode === "new" && newBranchName) {
-          const segments = newBranchName.split("/").filter(Boolean)
+        } else if (values.worktreeMode === "new" && values.newBranchName) {
+          const segments = values.newBranchName.split("/").filter(Boolean)
           baseName = segments[segments.length - 1] || "worktree"
         } else {
           baseName = "worktree"
@@ -529,13 +608,9 @@ function CreateTerminalDialog({
     return candidateName
   }
 
-  const nameError = name && existingTerminalNames.includes(name)
-    ? "A terminal with this name already exists"
-    : null
-
   const handleBrowseFolder = async () => {
-    const { open } = await import("@tauri-apps/plugin-dialog")
-    const selected = await open({
+    const { open: openDialog } = await import("@tauri-apps/plugin-dialog")
+    const selected = await openDialog({
       directory: true,
       multiple: false,
       defaultPath: projectPath,
@@ -545,65 +620,12 @@ function CreateTerminalDialog({
     if (selected) {
       if (selected.startsWith(projectPath)) {
         const relativePath = selected.slice(projectPath.length).replace(/^[/\\]/, "")
-        setFolderPath(relativePath || ".")
+        form.setFieldValue("folderPath", relativePath || ".")
       } else {
         setError("Please select a folder within the project directory")
       }
     }
   }
-
-  const handleCreate = async () => {
-    if (!clientId) return
-    if (mode === "folder" && !folderPath) return
-    if (mode === "worktree") {
-      if (worktreeMode === "existing" && !selectedWorktree) return
-      if (worktreeMode === "new" && (!baseBranch || !newBranchName)) return
-    }
-
-    const finalName = name.trim() || generateDefaultName()
-
-    if (existingTerminalNames.includes(finalName)) {
-      setError("A terminal with this name already exists")
-      return
-    }
-
-    setIsCreating(true)
-    setError(null)
-    try {
-      let worktreeBranch: string | null = null
-      if (mode === "worktree") {
-        if (worktreeMode === "existing") {
-          const wt = worktrees.find(w => w.path === selectedWorktree)
-          worktreeBranch = wt?.branch || null
-        } else {
-          worktreeBranch = `wt-${baseBranch}/${newBranchName}`
-        }
-      }
-
-      await onCreate({
-        project_id: projectId,
-        name: finalName,
-        client_id: clientId,
-        mode,
-        folder_path: mode === "folder" ? folderPath : null,
-        worktree_branch: worktreeBranch,
-      })
-    } catch (err) {
-      console.error("Failed to create terminal:", err)
-      setError(String(err))
-    } finally {
-      setIsCreating(false)
-    }
-  }
-
-  const isValid = clientId && !nameError && (
-    mode === "current_branch" ||
-    (mode === "folder" && folderPath) ||
-    (mode === "worktree" && (
-      (worktreeMode === "existing" && selectedWorktree) ||
-      (worktreeMode === "new" && baseBranch && newBranchName)
-    ))
-  )
 
   const inputProps = {
     autoComplete: "off",
@@ -613,204 +635,289 @@ function CreateTerminalDialog({
   } as const
 
   return (
-    <DialogContent className="sm:max-w-md">
-      <DialogHeader>
-        <DialogTitle>Create New Terminal</DialogTitle>
-        <DialogDescription>
-          Spawn a new AI code agent terminal with a specific mode.
-        </DialogDescription>
-      </DialogHeader>
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Create New Terminal</DialogTitle>
+          <DialogDescription>
+            Spawn a new AI code agent terminal with a specific mode.
+          </DialogDescription>
+        </DialogHeader>
 
-      <div className="grid gap-4 py-4">
-        {/* Terminal Name (optional) */}
-        <div className="grid gap-2">
-          <Label htmlFor="terminal-name">Terminal Name <span className="text-muted-foreground text-xs">(optional)</span></Label>
-          <Input
-            id="terminal-name"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder={generateDefaultName()}
-            className={nameError ? "border-destructive" : ""}
-            {...inputProps}
-          />
-          {nameError && <p className="text-xs text-destructive">{nameError}</p>}
-        </div>
+        <form
+          onSubmit={(e) => {
+            e.preventDefault()
+            e.stopPropagation()
+            form.handleSubmit()
+          }}
+        >
+          <div className="grid gap-4 py-4">
+            {/* Terminal Name (optional) */}
+            <form.Field name="name">
+              {(field) => {
+                const nameError = field.state.value && existingTerminalNames.includes(field.state.value)
+                  ? "A terminal with this name already exists"
+                  : null
+                return (
+                  <div className="grid gap-2">
+                    <Label htmlFor="terminal-name">Terminal Name <span className="text-muted-foreground text-xs">(optional)</span></Label>
+                    <Input
+                      id="terminal-name"
+                      value={field.state.value}
+                      onChange={(e) => field.handleChange(e.target.value)}
+                      onBlur={field.handleBlur}
+                      placeholder={generateDefaultName(form.state.values)}
+                      className={nameError ? "border-destructive" : ""}
+                      {...inputProps}
+                    />
+                    {nameError && <p className="text-xs text-destructive">{nameError}</p>}
+                  </div>
+                )
+              }}
+            </form.Field>
 
-        {/* AI Client */}
-        <div className="grid gap-2">
-          <Label htmlFor="client">AI Client</Label>
-          <Select value={clientId} onValueChange={setClientId}>
-            <SelectTrigger>
-              <SelectValue placeholder="Select an AI client" />
-            </SelectTrigger>
-            <SelectContent>
-              {installedClients.length === 0 ? (
-                <SelectItem value="none" disabled>
-                  No clients installed
-                </SelectItem>
-              ) : (
-                installedClients.map((client) => (
-                  <SelectItem key={client.id} value={client.id}>
-                    {client.name}
-                  </SelectItem>
-                ))
-              )}
-            </SelectContent>
-          </Select>
-        </div>
-
-        {/* Mode selection tabs */}
-        <div className="grid gap-2">
-          <Label>Terminal Mode</Label>
-          <Tabs value={mode} onValueChange={(v) => { setMode(v as typeof mode); setError(null) }}>
-            <TabsList className={`grid w-full ${isGitRepo ? "grid-cols-3" : "grid-cols-2"}`}>
-              <TabsTrigger value="current_branch" className="flex items-center gap-1 text-xs">
-                <Home className="h-3 w-3" />
-                Main
-              </TabsTrigger>
-              <TabsTrigger value="folder" className="flex items-center gap-1 text-xs">
-                <FolderOpen className="h-3 w-3" />
-                Folder
-              </TabsTrigger>
-              {isGitRepo && (
-                <TabsTrigger value="worktree" className="flex items-center gap-1 text-xs">
-                  <TreeDeciduous className="h-3 w-3" />
-                  Worktree
-                </TabsTrigger>
-              )}
-            </TabsList>
-
-            <TabsContent value="current_branch" className="mt-3">
-              <p className="text-xs text-muted-foreground">
-                Runs at project root on the current branch. Same as the main terminal but can be closed.
-              </p>
-            </TabsContent>
-
-            <TabsContent value="folder" className="mt-3 space-y-2">
-              <Label htmlFor="folder-path">Folder Path</Label>
-              <div className="flex gap-2">
-                <Input
-                  id="folder-path"
-                  value={folderPath}
-                  onChange={(e) => setFolderPath(e.target.value)}
-                  placeholder="src/components"
-                  className="flex-1"
-                  {...inputProps}
-                />
-                <Button variant="outline" onClick={handleBrowseFolder}>
-                  Browse
-                </Button>
-              </div>
-              <p className="text-xs text-muted-foreground">
-                Runs in a subfolder of the project.
-              </p>
-            </TabsContent>
-
-            {isGitRepo && (
-              <TabsContent value="worktree" className="mt-3 space-y-3">
-                {/* Worktree mode toggle */}
-                <Tabs
-                  value={worktreeMode}
-                  onValueChange={(v) => {
-                    setWorktreeMode(v as typeof worktreeMode)
-                    setError(null)
-                  }}
-                >
-                  <TabsList className="grid w-full grid-cols-2 h-8">
-                    <TabsTrigger value="existing" className="text-xs">Use Existing</TabsTrigger>
-                    <TabsTrigger value="new" className="text-xs">Create New</TabsTrigger>
-                  </TabsList>
-
-                  <TabsContent value="existing" className="mt-2 space-y-2">
-                    {worktrees.length === 0 ? (
-                      <p className="text-xs text-muted-foreground py-2">
-                        No worktrees available. Create a new one instead.
-                      </p>
-                    ) : (
-                      <>
-                        <Label>Select Worktree</Label>
-                        <Select value={selectedWorktree} onValueChange={setSelectedWorktree}>
-                          <SelectTrigger>
-                            <SelectValue placeholder="Select a worktree" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {worktrees.map((wt) => (
-                              <SelectItem key={wt.path} value={wt.path}>
-                                {wt.branch} <span className="text-muted-foreground">({wt.path.split("/").pop()})</span>
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </>
-                    )}
-                  </TabsContent>
-
-                  <TabsContent value="new" className="mt-2 space-y-2">
-                    <div className="space-y-1">
-                      <Label>Base Branch</Label>
-                      {branches.filter(b => !b.is_remote).length === 0 ? (
-                        <p className="text-xs text-muted-foreground py-2">
-                          No local branches available.
-                        </p>
+            {/* AI Client */}
+            <form.Field name="clientId">
+              {(field) => (
+                <div className="grid gap-2">
+                  <Label htmlFor="client">AI Client</Label>
+                  <Select value={field.state.value} onValueChange={field.handleChange}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select an AI client" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {installedClients.length === 0 ? (
+                        <SelectItem value="none" disabled>
+                          No clients installed
+                        </SelectItem>
                       ) : (
-                        <Select value={baseBranch} onValueChange={setBaseBranch}>
-                          <SelectTrigger>
-                            <SelectValue placeholder="Select base branch" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {branches.filter(b => !b.is_remote).map((b) => (
-                              <SelectItem key={b.name} value={b.name}>
-                                {b.name} {b.is_current && "(current)"}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
+                        installedClients.map((client) => (
+                          <SelectItem key={client.id} value={client.id}>
+                            {client.name}
+                          </SelectItem>
+                        ))
                       )}
-                    </div>
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+            </form.Field>
 
-                    <div className="space-y-1">
-                      <Label>New Branch Name</Label>
-                      <Input
-                        value={newBranchName}
-                        onChange={(e) => setNewBranchName(e.target.value.replace(/\s+/g, "-"))}
-                        placeholder="feature/my-feature"
-                        {...inputProps}
-                      />
-                    </div>
+            {/* Mode selection tabs */}
+            <form.Field name="mode">
+              {(modeField) => (
+                <div className="grid gap-2">
+                  <Label>Terminal Mode</Label>
+                  <Tabs
+                    value={modeField.state.value}
+                    onValueChange={(v) => {
+                      modeField.handleChange(v as typeof modeField.state.value)
+                      setError(null)
+                    }}
+                  >
+                    <TabsList className={`grid w-full ${isGitRepo ? "grid-cols-3" : "grid-cols-2"}`}>
+                      <TabsTrigger value="current_branch" className="flex items-center gap-1 text-xs">
+                        <Home className="h-3 w-3" />
+                        Main
+                      </TabsTrigger>
+                      <TabsTrigger value="folder" className="flex items-center gap-1 text-xs">
+                        <FolderOpen className="h-3 w-3" />
+                        Folder
+                      </TabsTrigger>
+                      {isGitRepo && (
+                        <TabsTrigger value="worktree" className="flex items-center gap-1 text-xs">
+                          <TreeDeciduous className="h-3 w-3" />
+                          Worktree
+                        </TabsTrigger>
+                      )}
+                    </TabsList>
 
-                    {baseBranch && newBranchName && (
-                      <div className="rounded-md bg-muted p-2 space-y-1">
-                        <p className="text-xs font-medium">Worktree will be created:</p>
-                        <code className="text-xs block break-all">
-                          wt-{baseBranch}/{newBranchName}
-                        </code>
-                        <p className="text-[10px] text-muted-foreground">
-                          Branch <span className="font-mono">{newBranchName}</span> from <span className="font-mono">{baseBranch}</span>
-                        </p>
-                      </div>
+                    <TabsContent value="current_branch" className="mt-3">
+                      <p className="text-xs text-muted-foreground">
+                        Runs at project root on the current branch. Same as the main terminal but can be closed.
+                      </p>
+                    </TabsContent>
+
+                    <TabsContent value="folder" className="mt-3 space-y-2">
+                      <form.Field name="folderPath">
+                        {(field) => (
+                          <>
+                            <Label htmlFor="folder-path">Folder Path</Label>
+                            <div className="flex gap-2">
+                              <Input
+                                id="folder-path"
+                                value={field.state.value}
+                                onChange={(e) => field.handleChange(e.target.value)}
+                                onBlur={field.handleBlur}
+                                placeholder="src/components"
+                                className="flex-1"
+                                {...inputProps}
+                              />
+                              <Button type="button" variant="outline" onClick={handleBrowseFolder}>
+                                Browse
+                              </Button>
+                            </div>
+                          </>
+                        )}
+                      </form.Field>
+                      <p className="text-xs text-muted-foreground">
+                        Runs in a subfolder of the project.
+                      </p>
+                    </TabsContent>
+
+                    {isGitRepo && (
+                      <TabsContent value="worktree" className="mt-3 space-y-3">
+                        {/* Worktree mode toggle */}
+                        <form.Field name="worktreeMode">
+                          {(worktreeModeField) => (
+                            <Tabs
+                              value={worktreeModeField.state.value}
+                              onValueChange={(v) => {
+                                worktreeModeField.handleChange(v as typeof worktreeModeField.state.value)
+                                setError(null)
+                              }}
+                            >
+                              <TabsList className="grid w-full grid-cols-2 h-8">
+                                <TabsTrigger value="existing" className="text-xs">Use Existing</TabsTrigger>
+                                <TabsTrigger value="new" className="text-xs">Create New</TabsTrigger>
+                              </TabsList>
+
+                              <TabsContent value="existing" className="mt-2 space-y-2">
+                                {worktrees.length === 0 ? (
+                                  <p className="text-xs text-muted-foreground py-2">
+                                    No worktrees available. Create a new one instead.
+                                  </p>
+                                ) : (
+                                  <form.Field name="selectedWorktree">
+                                    {(field) => (
+                                      <>
+                                        <Label>Select Worktree</Label>
+                                        <Select value={field.state.value} onValueChange={field.handleChange}>
+                                          <SelectTrigger>
+                                            <SelectValue placeholder="Select a worktree" />
+                                          </SelectTrigger>
+                                          <SelectContent>
+                                            {worktrees.map((wt) => (
+                                              <SelectItem key={wt.path} value={wt.path}>
+                                                {wt.branch} <span className="text-muted-foreground">({wt.path.split("/").pop()})</span>
+                                              </SelectItem>
+                                            ))}
+                                          </SelectContent>
+                                        </Select>
+                                      </>
+                                    )}
+                                  </form.Field>
+                                )}
+                              </TabsContent>
+
+                              <TabsContent value="new" className="mt-2 space-y-2">
+                                <form.Field name="baseBranch">
+                                  {(field) => (
+                                    <div className="space-y-1">
+                                      <Label>Base Branch</Label>
+                                      {branches.filter(b => !b.is_remote).length === 0 ? (
+                                        <p className="text-xs text-muted-foreground py-2">
+                                          No local branches available.
+                                        </p>
+                                      ) : (
+                                        <Select value={field.state.value} onValueChange={field.handleChange}>
+                                          <SelectTrigger>
+                                            <SelectValue placeholder="Select base branch" />
+                                          </SelectTrigger>
+                                          <SelectContent>
+                                            {branches.filter(b => !b.is_remote).map((b) => (
+                                              <SelectItem key={b.name} value={b.name}>
+                                                {b.name} {b.is_current && "(current)"}
+                                              </SelectItem>
+                                            ))}
+                                          </SelectContent>
+                                        </Select>
+                                      )}
+                                    </div>
+                                  )}
+                                </form.Field>
+
+                                <form.Field name="newBranchName">
+                                  {(field) => (
+                                    <div className="space-y-1">
+                                      <Label>New Branch Name</Label>
+                                      <Input
+                                        value={field.state.value}
+                                        onChange={(e) => field.handleChange(e.target.value.replace(/\s+/g, "-"))}
+                                        onBlur={field.handleBlur}
+                                        placeholder="feature/my-feature"
+                                        {...inputProps}
+                                      />
+                                    </div>
+                                  )}
+                                </form.Field>
+
+                                <form.Subscribe
+                                  selector={(state) => ({
+                                    baseBranch: state.values.baseBranch,
+                                    newBranchName: state.values.newBranchName,
+                                  })}
+                                >
+                                  {({ baseBranch, newBranchName }) =>
+                                    baseBranch && newBranchName ? (
+                                      <div className="rounded-md bg-muted p-2 space-y-1">
+                                        <p className="text-xs font-medium">Worktree will be created:</p>
+                                        <code className="text-xs block break-all">
+                                          wt-{baseBranch}/{newBranchName}
+                                        </code>
+                                        <p className="text-[10px] text-muted-foreground">
+                                          Branch <span className="font-mono">{newBranchName}</span> from <span className="font-mono">{baseBranch}</span>
+                                        </p>
+                                      </div>
+                                    ) : null
+                                  }
+                                </form.Subscribe>
+                              </TabsContent>
+                            </Tabs>
+                          )}
+                        </form.Field>
+                      </TabsContent>
                     )}
-                  </TabsContent>
-                </Tabs>
-              </TabsContent>
+                  </Tabs>
+                </div>
+              )}
+            </form.Field>
+
+            {error && (
+              <div className="rounded-md bg-destructive/10 border border-destructive/20 p-3">
+                <p className="text-sm text-destructive">{error}</p>
+              </div>
             )}
-          </Tabs>
-        </div>
-
-        {error && (
-          <div className="rounded-md bg-destructive/10 border border-destructive/20 p-3">
-            <p className="text-sm text-destructive">{error}</p>
           </div>
-        )}
-      </div>
 
-      <DialogFooter>
-        <Button variant="outline" onClick={onClose}>
-          Cancel
-        </Button>
-        <Button onClick={handleCreate} disabled={!isValid || isCreating}>
-          {isCreating ? "Creating..." : "Create Terminal"}
-        </Button>
-      </DialogFooter>
-    </DialogContent>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+              Cancel
+            </Button>
+            <form.Subscribe
+              selector={(state) => {
+                const values = state.values
+                const nameConflict = values.name && existingTerminalNames.includes(values.name)
+                const isValid = values.clientId && !nameConflict && (
+                  values.mode === "current_branch" ||
+                  (values.mode === "folder" && values.folderPath) ||
+                  (values.mode === "worktree" && (
+                    (values.worktreeMode === "existing" && values.selectedWorktree) ||
+                    (values.worktreeMode === "new" && values.baseBranch && values.newBranchName)
+                  ))
+                )
+                return { canSubmit: isValid, isSubmitting: state.isSubmitting }
+              }}
+            >
+              {({ canSubmit, isSubmitting }) => (
+                <Button type="submit" disabled={!canSubmit || isSubmitting || createTerminalMutation.isPending}>
+                  {isSubmitting || createTerminalMutation.isPending ? "Creating..." : "Create Terminal"}
+                </Button>
+              )}
+            </form.Subscribe>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
   )
 }

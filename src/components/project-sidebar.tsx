@@ -1,9 +1,10 @@
 import { useState, useCallback, useEffect, Suspense } from "react"
 import { useNavigate, useParams } from "@tanstack/react-router"
 import { Plus, FolderOpen, Trash2, FolderPlus, GitBranch, Bot, ChevronLeft, ChevronRight } from "lucide-react"
-import { open } from "@tauri-apps/plugin-dialog"
+import { open as openDialog } from "@tauri-apps/plugin-dialog"
 import { readDir, exists } from "@tauri-apps/plugin-fs"
 import { useSuspenseQuery, useQuery, useQueryClient } from "@tanstack/react-query"
+import { useForm } from "@tanstack/react-form"
 
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -70,10 +71,7 @@ function ProjectSidebarContent() {
   const currentProjectId = (params as { projectId?: string }).projectId
 
   const { data: projects } = useSuspenseQuery(projectsQueryOptions())
-  const createProjectMutation = useCreateProject()
-  const openProjectMutation = useOpenProject()
   const deleteProjectMutation = useDeleteProject()
-  const updateSettingsMutation = useUpdateProjectSettings()
 
   const { sidebarCollapsed, setSidebarCollapsed } = useTerminalUIStore()
 
@@ -94,11 +92,14 @@ function ProjectSidebarContent() {
     queryClient.prefetchQuery(terminalsQueryOptions(projectId))
   }
 
-  const handleDeleteProject = async (projectId: string) => {
-    await deleteProjectMutation.mutateAsync(projectId)
-    if (projectId === currentProjectId) {
-      navigate({ to: "/" })
-    }
+  const handleDeleteProject = (projectId: string) => {
+    deleteProjectMutation.mutate(projectId, {
+      onSuccess: () => {
+        if (projectId === currentProjectId) {
+          navigate({ to: "/" })
+        }
+      },
+    })
   }
 
   const handleDeleteClick = (project: ProjectSummary, shiftKey: boolean) => {
@@ -202,38 +203,14 @@ function ProjectSidebarContent() {
       />
 
       {/* Create Project Dialog */}
-      <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
-        <CreateProjectDialog
-          isOpen={isCreateDialogOpen}
-          onClose={() => setIsCreateDialogOpen(false)}
-          onCreateNew={async (path, initGit, defaultClientId) => {
-            const project = await createProjectMutation.mutateAsync({ path, initGit })
-            if (defaultClientId) {
-              await updateSettingsMutation.mutateAsync({
-                project_id: project.id,
-                default_client: defaultClientId,
-                auto_create_worktree: false,
-                worktree_base_path: null,
-              })
-            }
-            setIsCreateDialogOpen(false)
-            navigate({ to: "/project/$projectId", params: { projectId: project.id } })
-          }}
-          onOpenExisting={async (path, defaultClientId) => {
-            const project = await openProjectMutation.mutateAsync(path)
-            if (defaultClientId) {
-              await updateSettingsMutation.mutateAsync({
-                project_id: project.id,
-                default_client: defaultClientId,
-                auto_create_worktree: false,
-                worktree_base_path: null,
-              })
-            }
-            setIsCreateDialogOpen(false)
-            navigate({ to: "/project/$projectId", params: { projectId: project.id } })
-          }}
-        />
-      </Dialog>
+      <CreateProjectDialog
+        open={isCreateDialogOpen}
+        onOpenChange={setIsCreateDialogOpen}
+        onCreated={(projectId) => {
+          setIsCreateDialogOpen(false)
+          navigate({ to: "/project/$projectId", params: { projectId } })
+        }}
+      />
     </div>
   )
 }
@@ -292,26 +269,104 @@ function ProjectItem({ project, isSelected, isCollapsed, onSelect, onHover, onDe
   )
 }
 
-interface CreateProjectDialogProps {
-  isOpen: boolean
-  onClose: () => void
-  onCreateNew: (path: string, initGit: boolean, defaultClientId: string | null) => Promise<void>
-  onOpenExisting: (path: string, defaultClientId: string | null) => Promise<void>
+interface CreateProjectFormValues {
+  activeTab: "new" | "existing"
+  newPath: string
+  initGit: boolean
+  existingPath: string
+  defaultClient: string
 }
 
-function CreateProjectDialog({ isOpen, onClose, onCreateNew, onOpenExisting }: CreateProjectDialogProps) {
-  const [activeTab, setActiveTab] = useState<"new" | "existing">("new")
-  const [newPath, setNewPath] = useState("")
-  const [initGit, setInitGit] = useState(true)
-  const [existingPath, setExistingPath] = useState("")
-  const [isLoading, setIsLoading] = useState(false)
+interface CreateProjectDialogProps {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  onCreated: (projectId: string) => void
+}
+
+function CreateProjectDialog({ open, onOpenChange, onCreated }: CreateProjectDialogProps) {
   const [error, setError] = useState<string | null>(null)
-  const [defaultClient, setDefaultClient] = useState<string>("")
   const [pathWarning, setPathWarning] = useState<string | null>(null)
   const [isValidatingPath, setIsValidatingPath] = useState(false)
 
   // Use regular useQuery for dialog content - don't suspend the whole sidebar for this
   const { data: clients = [] } = useQuery(clientsQueryOptions())
+
+  // Mutations
+  const createProjectMutation = useCreateProject()
+  const openProjectMutation = useOpenProject()
+  const updateSettingsMutation = useUpdateProjectSettings()
+
+  const getDefaultValues = useCallback((): CreateProjectFormValues => ({
+    activeTab: "new",
+    newPath: "",
+    initGit: true,
+    existingPath: "",
+    defaultClient: "",
+  }), [])
+
+  const form = useForm({
+    defaultValues: getDefaultValues(),
+    onSubmit: ({ value }) => {
+      setError(null)
+
+      if (value.activeTab === "new") {
+        if (!value.newPath || pathWarning) return
+
+        createProjectMutation.mutate(
+          { path: value.newPath, initGit: value.initGit },
+          {
+            onSuccess: (project) => {
+              if (value.defaultClient) {
+                updateSettingsMutation.mutate(
+                  {
+                    project_id: project.id,
+                    default_client: value.defaultClient,
+                    auto_create_worktree: false,
+                    worktree_base_path: null,
+                  },
+                  {
+                    onSuccess: () => onCreated(project.id),
+                    onError: () => onCreated(project.id), // Still navigate even if settings fail
+                  }
+                )
+              } else {
+                onCreated(project.id)
+              }
+            },
+            onError: (err) => {
+              setError(String(err))
+            },
+          }
+        )
+      } else {
+        if (!value.existingPath) return
+
+        openProjectMutation.mutate(value.existingPath, {
+          onSuccess: (project) => {
+            if (value.defaultClient) {
+              updateSettingsMutation.mutate(
+                {
+                  project_id: project.id,
+                  default_client: value.defaultClient,
+                  auto_create_worktree: false,
+                  worktree_base_path: null,
+                },
+                {
+                  onSuccess: () => onCreated(project.id),
+                  onError: () => onCreated(project.id), // Still navigate even if settings fail
+                }
+              )
+            } else {
+              onCreated(project.id)
+            }
+          },
+          onError: (err) => {
+            setError(String(err))
+          },
+        })
+      }
+    },
+  })
 
   // Validate that the folder is empty or doesn't exist
   const validateNewPath = useCallback(async (path: string) => {
@@ -338,8 +393,21 @@ function CreateProjectDialog({ isOpen, onClose, onCreateNew, onOpenExisting }: C
     }
   }, [])
 
-  // Validate path when it changes
+  // Reset form when dialog opens
   useEffect(() => {
+    if (open) {
+      form.reset(getDefaultValues())
+      setError(null)
+      setPathWarning(null)
+      setIsValidatingPath(false)
+    }
+  }, [open, form, getDefaultValues])
+
+  // Validate new path with debounce
+  useEffect(() => {
+    const activeTab = form.state.values.activeTab
+    const newPath = form.state.values.newPath
+
     if (activeTab === "new" && newPath) {
       const timeoutId = setTimeout(() => {
         validateNewPath(newPath)
@@ -348,213 +416,224 @@ function CreateProjectDialog({ isOpen, onClose, onCreateNew, onOpenExisting }: C
     } else {
       setPathWarning(null)
     }
-  }, [newPath, activeTab, validateNewPath])
-
-  // Reset state when dialog opens
-  useEffect(() => {
-    if (isOpen) {
-      setActiveTab("new")
-      setNewPath("")
-      setInitGit(true)
-      setExistingPath("")
-      setError(null)
-      setIsLoading(false)
-      setDefaultClient("")
-      setPathWarning(null)
-      setIsValidatingPath(false)
-    }
-  }, [isOpen])
-
-  const handleClose = () => {
-    setActiveTab("new")
-    setNewPath("")
-    setInitGit(true)
-    setExistingPath("")
-    setError(null)
-    setDefaultClient("")
-    setPathWarning(null)
-    onClose()
-  }
+  }, [form.state.values.activeTab, form.state.values.newPath, validateNewPath])
 
   const handleBrowseNew = async () => {
-    const selected = await open({
+    const selected = await openDialog({
       directory: true,
       multiple: false,
       title: "Select Location for New Project",
     })
 
     if (selected) {
-      setNewPath(selected)
+      form.setFieldValue("newPath", selected)
     }
   }
 
   const handleBrowseExisting = async () => {
-    const selected = await open({
+    const selected = await openDialog({
       directory: true,
       multiple: false,
       title: "Select Folder",
     })
 
     if (selected) {
-      setExistingPath(selected)
+      form.setFieldValue("existingPath", selected)
     }
   }
 
-  const handleCreateNew = async () => {
-    if (!newPath) return
-    setIsLoading(true)
-    setError(null)
-    try {
-      await onCreateNew(newPath, initGit, defaultClient || null)
-    } catch (err) {
-      setError(String(err))
-    } finally {
-      setIsLoading(false)
-    }
-  }
-
-  const handleOpenExisting = async () => {
-    if (!existingPath) return
-    setIsLoading(true)
-    setError(null)
-    try {
-      await onOpenExisting(existingPath, defaultClient || null)
-    } catch (err) {
-      setError(String(err))
-    } finally {
-      setIsLoading(false)
-    }
-  }
+  const isPending = createProjectMutation.isPending || openProjectMutation.isPending || updateSettingsMutation.isPending
 
   return (
-    <DialogContent className="sm:max-w-md">
-      <DialogHeader>
-        <DialogTitle>Add Project</DialogTitle>
-        <DialogDescription>
-          Create a new project or open an existing folder.
-        </DialogDescription>
-      </DialogHeader>
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Add Project</DialogTitle>
+          <DialogDescription>
+            Create a new project or open an existing folder.
+          </DialogDescription>
+        </DialogHeader>
 
-      <Tabs value={activeTab} onValueChange={(v) => { setActiveTab(v as "new" | "existing"); setError(null); setPathWarning(null) }}>
-        <TabsList className="grid w-full grid-cols-2">
-          <TabsTrigger value="new" className="flex items-center gap-2">
-            <FolderPlus className="h-4 w-4" />
-            New Project
-          </TabsTrigger>
-          <TabsTrigger value="existing" className="flex items-center gap-2">
-            <FolderOpen className="h-4 w-4" />
-            Open Existing
-          </TabsTrigger>
-        </TabsList>
+        <form
+          onSubmit={(e) => {
+            e.preventDefault()
+            e.stopPropagation()
+            form.handleSubmit()
+          }}
+        >
+          <form.Field name="activeTab">
+            {(tabField) => (
+              <Tabs
+                value={tabField.state.value}
+                onValueChange={(v) => {
+                  tabField.handleChange(v as "new" | "existing")
+                  setError(null)
+                  setPathWarning(null)
+                }}
+              >
+                <TabsList className="grid w-full grid-cols-2">
+                  <TabsTrigger value="new" className="flex items-center gap-2">
+                    <FolderPlus className="h-4 w-4" />
+                    New Project
+                  </TabsTrigger>
+                  <TabsTrigger value="existing" className="flex items-center gap-2">
+                    <FolderOpen className="h-4 w-4" />
+                    Open Existing
+                  </TabsTrigger>
+                </TabsList>
 
-        <TabsContent value="new" className="space-y-4 pt-4">
-          <div className="grid gap-2">
-            <Label htmlFor="new-path">Project Location</Label>
-            <div className="flex gap-2">
-              <Input
-                id="new-path"
-                value={newPath}
-                onChange={(e) => setNewPath(e.target.value)}
-                placeholder="/path/to/new-project"
-                className={`flex-1 ${pathWarning ? "border-amber-500" : ""}`}
-              />
-              <Button variant="outline" onClick={handleBrowseNew}>
-                Browse
-              </Button>
-            </div>
-            {pathWarning && (
-              <p className="text-xs text-amber-600">{pathWarning}</p>
+                <TabsContent value="new" className="space-y-4 pt-4">
+                  <form.Field name="newPath">
+                    {(field) => (
+                      <div className="grid gap-2">
+                        <Label htmlFor="new-path">Project Location</Label>
+                        <div className="flex gap-2">
+                          <Input
+                            id="new-path"
+                            value={field.state.value}
+                            onChange={(e) => field.handleChange(e.target.value)}
+                            onBlur={field.handleBlur}
+                            placeholder="/path/to/new-project"
+                            className={`flex-1 ${pathWarning ? "border-amber-500" : ""}`}
+                          />
+                          <Button type="button" variant="outline" onClick={handleBrowseNew}>
+                            Browse
+                          </Button>
+                        </div>
+                        {pathWarning && (
+                          <p className="text-xs text-amber-600">{pathWarning}</p>
+                        )}
+                      </div>
+                    )}
+                  </form.Field>
+
+                  <form.Field name="initGit">
+                    {(field) => (
+                      <div className="flex items-center justify-between rounded-lg border p-3">
+                        <div className="space-y-0.5">
+                          <div className="flex items-center gap-2">
+                            <GitBranch className="h-4 w-4 text-muted-foreground" />
+                            <Label htmlFor="init-git" className="font-medium">Initialize Git Repository</Label>
+                          </div>
+                          <p className="text-xs text-muted-foreground">
+                            {field.state.value
+                              ? "Creates a git repo with an initial commit and worktree support."
+                              : "No version control. You can add git later."}
+                          </p>
+                        </div>
+                        <Switch
+                          id="init-git"
+                          checked={field.state.value}
+                          onCheckedChange={field.handleChange}
+                        />
+                      </div>
+                    )}
+                  </form.Field>
+                </TabsContent>
+
+                <TabsContent value="existing" className="space-y-4 pt-4">
+                  <form.Field name="existingPath">
+                    {(field) => (
+                      <div className="grid gap-2">
+                        <Label htmlFor="existing-path">Folder Location</Label>
+                        <div className="flex gap-2">
+                          <Input
+                            id="existing-path"
+                            value={field.state.value}
+                            onChange={(e) => field.handleChange(e.target.value)}
+                            onBlur={field.handleBlur}
+                            placeholder="/path/to/existing-folder"
+                            className="flex-1"
+                          />
+                          <Button type="button" variant="outline" onClick={handleBrowseExisting}>
+                            Browse
+                          </Button>
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          Opens any folder as a project. If it's a git repository, Ada will configure worktree support automatically.
+                        </p>
+                      </div>
+                    )}
+                  </form.Field>
+                </TabsContent>
+              </Tabs>
             )}
-          </div>
+          </form.Field>
 
-          <div className="flex items-center justify-between rounded-lg border p-3">
-            <div className="space-y-0.5">
-              <div className="flex items-center gap-2">
-                <GitBranch className="h-4 w-4 text-muted-foreground" />
-                <Label htmlFor="init-git" className="font-medium">Initialize Git Repository</Label>
+          {/* Default AI Client - shared between both tabs */}
+          <form.Field name="defaultClient">
+            {(field) => (
+              <div className="grid gap-2 mt-4">
+                <Label htmlFor="default-client">Default AI Client</Label>
+                <Select value={field.state.value} onValueChange={field.handleChange}>
+                  <SelectTrigger id="default-client">
+                    <SelectValue placeholder="Select a client (optional)">
+                      {field.state.value && (
+                        <span className="flex items-center gap-2">
+                          <Bot className="h-4 w-4" />
+                          {clients.find(c => c.id === field.state.value)?.name}
+                        </span>
+                      )}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    {clients.filter(c => c.installed).map((client) => (
+                      <SelectItem key={client.id} value={client.id}>
+                        <span className="flex items-center gap-2">
+                          <Bot className="h-4 w-4" />
+                          {client.name}
+                        </span>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  The AI client to use when creating new terminals in this project.
+                </p>
               </div>
-              <p className="text-xs text-muted-foreground">
-                {initGit
-                  ? "Creates a git repo with an initial commit and worktree support."
-                  : "No version control. You can add git later."}
-              </p>
+            )}
+          </form.Field>
+
+          {error && (
+            <div className="rounded-md bg-destructive/10 border border-destructive/20 p-3 mt-4">
+              <p className="text-sm text-destructive">{error}</p>
             </div>
-            <Switch id="init-git" checked={initGit} onCheckedChange={setInitGit} />
-          </div>
-        </TabsContent>
+          )}
 
-        <TabsContent value="existing" className="space-y-4 pt-4">
-          <div className="grid gap-2">
-            <Label htmlFor="existing-path">Folder Location</Label>
-            <div className="flex gap-2">
-              <Input
-                id="existing-path"
-                value={existingPath}
-                onChange={(e) => setExistingPath(e.target.value)}
-                placeholder="/path/to/existing-folder"
-                className="flex-1"
-              />
-              <Button variant="outline" onClick={handleBrowseExisting}>
-                Browse
-              </Button>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              Opens any folder as a project. If it's a git repository, Ada will configure worktree support automatically.
-            </p>
-          </div>
-        </TabsContent>
-      </Tabs>
+          <DialogFooter className="mt-6">
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+              Cancel
+            </Button>
+            <form.Subscribe
+              selector={(state) => ({
+                activeTab: state.values.activeTab,
+                newPath: state.values.newPath,
+                existingPath: state.values.existingPath,
+                isSubmitting: state.isSubmitting,
+              })}
+            >
+              {({ activeTab, newPath, existingPath, isSubmitting }) => {
+                const canSubmit = activeTab === "new"
+                  ? newPath && !pathWarning && !isValidatingPath
+                  : existingPath
 
-      {/* Default AI Client - shared between both tabs */}
-      <div className="grid gap-2">
-        <Label htmlFor="default-client">Default AI Client</Label>
-        <Select value={defaultClient} onValueChange={setDefaultClient}>
-          <SelectTrigger id="default-client">
-            <SelectValue placeholder="Select a client (optional)">
-              {defaultClient && (
-                <span className="flex items-center gap-2">
-                  <Bot className="h-4 w-4" />
-                  {clients.find(c => c.id === defaultClient)?.name}
-                </span>
-              )}
-            </SelectValue>
-          </SelectTrigger>
-          <SelectContent>
-            {clients.filter(c => c.installed).map((client) => (
-              <SelectItem key={client.id} value={client.id}>
-                <span className="flex items-center gap-2">
-                  <Bot className="h-4 w-4" />
-                  {client.name}
-                </span>
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <p className="text-xs text-muted-foreground">
-          The AI client to use when creating new terminals in this project.
-        </p>
-      </div>
-
-      {error && (
-        <div className="rounded-md bg-destructive/10 border border-destructive/20 p-3">
-          <p className="text-sm text-destructive">{error}</p>
-        </div>
-      )}
-
-      <DialogFooter>
-        <Button variant="outline" onClick={handleClose}>
-          Cancel
-        </Button>
-        {activeTab === "new" ? (
-          <Button onClick={handleCreateNew} disabled={!newPath || isLoading || !!pathWarning || isValidatingPath}>
-            {isLoading ? "Creating..." : isValidatingPath ? "Validating..." : "Create Project"}
-          </Button>
-        ) : (
-          <Button onClick={handleOpenExisting} disabled={!existingPath || isLoading}>
-            {isLoading ? "Opening..." : "Open Project"}
-          </Button>
-        )}
-      </DialogFooter>
-    </DialogContent>
+                return (
+                  <Button type="submit" disabled={!canSubmit || isSubmitting || isPending}>
+                    {isPending
+                      ? activeTab === "new" ? "Creating..." : "Opening..."
+                      : isValidatingPath
+                        ? "Validating..."
+                        : activeTab === "new"
+                          ? "Create Project"
+                          : "Open Project"
+                    }
+                  </Button>
+                )
+              }}
+            </form.Subscribe>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
   )
 }

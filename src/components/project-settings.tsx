@@ -1,4 +1,5 @@
-import { useState } from "react"
+import { useEffect, useCallback } from "react"
+import { useForm } from "@tanstack/react-form"
 
 import { Button } from "@/components/ui/button"
 import {
@@ -20,6 +21,10 @@ import {
 import { useUpdateProjectSettings } from "@/lib/queries"
 import type { AdaProject, ClientSummary } from "@/lib/types"
 
+interface ProjectSettingsFormValues {
+  defaultClient: string
+}
+
 interface ProjectSettingsProps {
   project: AdaProject
   clients: ClientSummary[]
@@ -31,61 +36,50 @@ interface ProjectSettingsProps {
 export function ProjectSettings({
   project,
   clients,
-  open: isOpen,
+  open,
   onOpenChange,
   onSaved,
 }: ProjectSettingsProps) {
-  // Reset form when project changes by using key pattern
-  const projectClientSetting = project.settings.default_client || ""
-
-  return (
-    <ProjectSettingsInner
-      key={project.id}
-      project={project}
-      clients={clients}
-      open={isOpen}
-      onOpenChange={onOpenChange}
-      onSaved={onSaved}
-      initialDefaultClient={projectClientSetting}
-    />
-  )
-}
-
-interface ProjectSettingsInnerProps extends ProjectSettingsProps {
-  initialDefaultClient: string
-}
-
-function ProjectSettingsInner({
-  project,
-  clients,
-  open: isOpen,
-  onOpenChange,
-  onSaved,
-  initialDefaultClient,
-}: ProjectSettingsInnerProps) {
-  const [defaultClient, setDefaultClient] = useState<string>(initialDefaultClient)
-
   const updateSettingsMutation = useUpdateProjectSettings()
 
-  const handleSave = async () => {
-    try {
-      const updatedProject = await updateSettingsMutation.mutateAsync({
-        project_id: project.id,
-        default_client: defaultClient || null,
-        auto_create_worktree: project.settings.auto_create_worktree,
-        worktree_base_path: project.settings.worktree_base_path,
-      })
-      onSaved(updatedProject)
-      onOpenChange(false)
-    } catch (error) {
-      console.error("Failed to save settings:", error)
+  const getDefaultValues = useCallback((): ProjectSettingsFormValues => ({
+    defaultClient: project.settings.default_client || "",
+  }), [project.settings.default_client])
+
+  const form = useForm({
+    defaultValues: getDefaultValues(),
+    onSubmit: ({ value }) => {
+      updateSettingsMutation.mutate(
+        {
+          project_id: project.id,
+          default_client: value.defaultClient || null,
+          auto_create_worktree: project.settings.auto_create_worktree,
+          worktree_base_path: project.settings.worktree_base_path,
+        },
+        {
+          onSuccess: (updatedProject) => {
+            onSaved(updatedProject)
+            onOpenChange(false)
+          },
+          onError: (error) => {
+            console.error("Failed to save settings:", error)
+          },
+        }
+      )
+    },
+  })
+
+  // Reset form when dialog opens or project changes
+  useEffect(() => {
+    if (open) {
+      form.reset(getDefaultValues())
     }
-  }
+  }, [open, form, getDefaultValues])
 
   const installedClients = clients.filter((c) => c.installed)
 
   return (
-    <Dialog open={isOpen} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-[500px]">
         <DialogHeader>
           <DialogTitle>Project Settings</DialogTitle>
@@ -94,62 +88,78 @@ function ProjectSettingsInner({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="grid gap-6 py-4">
-          {/* Project Info */}
-          <div className="space-y-2">
-            <h3 className="text-sm font-medium">Project Information</h3>
-            <div className="text-sm text-muted-foreground">
-              <p><span className="font-medium">Name:</span> {project.name}</p>
-              <p className="truncate"><span className="font-medium">Path:</span> {project.path}</p>
+        <form
+          onSubmit={(e) => {
+            e.preventDefault()
+            e.stopPropagation()
+            form.handleSubmit()
+          }}
+        >
+          <div className="grid gap-6 py-4">
+            {/* Project Info */}
+            <div className="space-y-2">
+              <h3 className="text-sm font-medium">Project Information</h3>
+              <div className="text-sm text-muted-foreground">
+                <p><span className="font-medium">Name:</span> {project.name}</p>
+                <p className="truncate"><span className="font-medium">Path:</span> {project.path}</p>
+              </div>
             </div>
+
+            {/* Default Client */}
+            <form.Field name="defaultClient">
+              {(field) => (
+                <div className="grid gap-2">
+                  <Label htmlFor="default-client">Default AI Client</Label>
+                  <Select
+                    value={field.state.value || "__none__"}
+                    onValueChange={(val) => field.handleChange(val === "__none__" ? "" : val)}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select default client" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__none__">None (ask each time)</SelectItem>
+                      {installedClients.map((client) => (
+                        <SelectItem key={client.id} value={client.id}>
+                          {client.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    Pre-select this client when creating new terminals
+                  </p>
+                </div>
+              )}
+            </form.Field>
+
+            {/* Worktree Base Path (read-only) */}
+            {project.is_git_repo && (
+              <div className="grid gap-2">
+                <Label className="text-muted-foreground">Worktree Directory</Label>
+                <p className="text-sm font-mono bg-muted px-3 py-2 rounded-md truncate">
+                  {project.settings.worktree_base_path || `${project.path}/.worktrees`}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  Where git worktrees are created for branch-specific terminals
+                </p>
+              </div>
+            )}
           </div>
 
-          {/* Default Client */}
-          <div className="grid gap-2">
-            <Label htmlFor="default-client">Default AI Client</Label>
-            <Select
-              value={defaultClient || "__none__"}
-              onValueChange={(val) => setDefaultClient(val === "__none__" ? "" : val)}
-            >
-              <SelectTrigger>
-                <SelectValue placeholder="Select default client" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="__none__">None (ask each time)</SelectItem>
-                {installedClients.map((client) => (
-                  <SelectItem key={client.id} value={client.id}>
-                    {client.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <p className="text-xs text-muted-foreground">
-              Pre-select this client when creating new terminals
-            </p>
-          </div>
-
-          {/* Worktree Base Path (read-only) */}
-          {project.is_git_repo && (
-            <div className="grid gap-2">
-              <Label className="text-muted-foreground">Worktree Directory</Label>
-              <p className="text-sm font-mono bg-muted px-3 py-2 rounded-md truncate">
-                {project.settings.worktree_base_path || `${project.path}/.worktrees`}
-              </p>
-              <p className="text-xs text-muted-foreground">
-                Where git worktrees are created for branch-specific terminals
-              </p>
-            </div>
-          )}
-        </div>
-
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
-            Cancel
-          </Button>
-          <Button onClick={handleSave} disabled={updateSettingsMutation.isPending}>
-            {updateSettingsMutation.isPending ? "Saving..." : "Save Settings"}
-          </Button>
-        </DialogFooter>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+              Cancel
+            </Button>
+            <form.Subscribe selector={(state) => state.isSubmitting}>
+              {(isSubmitting) => (
+                <Button type="submit" disabled={isSubmitting || updateSettingsMutation.isPending}>
+                  {isSubmitting || updateSettingsMutation.isPending ? "Saving..." : "Save Settings"}
+                </Button>
+              )}
+            </form.Subscribe>
+          </DialogFooter>
+        </form>
       </DialogContent>
     </Dialog>
   )
