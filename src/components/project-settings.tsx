@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react"
+import { useState } from "react"
 
 import { Button } from "@/components/ui/button"
 import {
@@ -17,7 +17,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { projectApi, type UpdateProjectSettingsRequest } from "@/lib/api"
+import { useUpdateProjectSettings } from "@/lib/queries"
 import type { AdaProject, ClientSummary } from "@/lib/types"
 
 interface ProjectSettingsProps {
@@ -35,34 +35,50 @@ export function ProjectSettings({
   onOpenChange,
   onSaved,
 }: ProjectSettingsProps) {
-  const [defaultClient, setDefaultClient] = useState<string>(
-    project.settings.default_client || ""
-  )
-  const [isSaving, setIsSaving] = useState(false)
+  // Reset form when project changes by using key pattern
+  const projectClientSetting = project.settings.default_client || ""
 
-  // Reset form when project changes
-  useEffect(() => {
-    setDefaultClient(project.settings.default_client || "")
-  }, [project])
+  return (
+    <ProjectSettingsInner
+      key={project.id}
+      project={project}
+      clients={clients}
+      open={isOpen}
+      onOpenChange={onOpenChange}
+      onSaved={onSaved}
+      initialDefaultClient={projectClientSetting}
+    />
+  )
+}
+
+interface ProjectSettingsInnerProps extends ProjectSettingsProps {
+  initialDefaultClient: string
+}
+
+function ProjectSettingsInner({
+  project,
+  clients,
+  open: isOpen,
+  onOpenChange,
+  onSaved,
+  initialDefaultClient,
+}: ProjectSettingsInnerProps) {
+  const [defaultClient, setDefaultClient] = useState<string>(initialDefaultClient)
+
+  const updateSettingsMutation = useUpdateProjectSettings()
 
   const handleSave = async () => {
-    setIsSaving(true)
     try {
-      const request: UpdateProjectSettingsRequest = {
+      const updatedProject = await updateSettingsMutation.mutateAsync({
         project_id: project.id,
         default_client: defaultClient || null,
-        // Preserve existing worktree settings
         auto_create_worktree: project.settings.auto_create_worktree,
         worktree_base_path: project.settings.worktree_base_path,
-      }
-
-      const updatedProject = await projectApi.updateSettings(request)
+      })
       onSaved(updatedProject)
       onOpenChange(false)
     } catch (error) {
       console.error("Failed to save settings:", error)
-    } finally {
-      setIsSaving(false)
     }
   }
 
@@ -130,8 +146,8 @@ export function ProjectSettings({
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button onClick={handleSave} disabled={isSaving}>
-            {isSaving ? "Saving..." : "Save Settings"}
+          <Button onClick={handleSave} disabled={updateSettingsMutation.isPending}>
+            {updateSettingsMutation.isPending ? "Saving..." : "Save Settings"}
           </Button>
         </DialogFooter>
       </DialogContent>

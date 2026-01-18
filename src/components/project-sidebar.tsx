@@ -1,8 +1,9 @@
-import { useEffect, useState, useCallback } from "react"
+import { useState, useCallback, useEffect, Suspense } from "react"
 import { useNavigate, useParams } from "@tanstack/react-router"
 import { Plus, FolderOpen, Trash2, FolderPlus, GitBranch, Bot } from "lucide-react"
 import { open } from "@tauri-apps/plugin-dialog"
 import { readDir, exists } from "@tauri-apps/plugin-fs"
+import { useSuspenseQuery, useQuery, useQueryClient } from "@tanstack/react-query"
 
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -25,31 +26,74 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { useProjectStore } from "@/stores/project-store"
-import { useClientStore } from "@/stores/client-store"
-import { projectApi } from "@/lib/api"
-import type { ProjectSummary } from "@/lib/types"
 import {
   ContextMenu,
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu"
+import {
+  projectsQueryOptions,
+  projectQueryOptions,
+  terminalsQueryOptions,
+  clientsQueryOptions,
+  useCreateProject,
+  useOpenProject,
+  useDeleteProject,
+  useUpdateProjectSettings,
+} from "@/lib/queries"
+import type { ProjectSummary } from "@/lib/types"
 
 export function ProjectSidebar() {
+  return (
+    <Suspense fallback={<ProjectSidebarSkeleton />}>
+      <ProjectSidebarContent />
+    </Suspense>
+  )
+}
+
+function ProjectSidebarSkeleton() {
+  return (
+    <div className="w-52 border-r border-border flex flex-col bg-background">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-border">
+        <span className="font-semibold text-lg">ada</span>
+      </div>
+      <div className="flex-1 flex items-center justify-center">
+        <div className="animate-spin rounded-full border-2 border-muted border-t-primary h-6 w-6" />
+      </div>
+    </div>
+  )
+}
+
+function ProjectSidebarContent() {
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
   const params = useParams({ strict: false })
   const currentProjectId = (params as { projectId?: string }).projectId
 
-  const { projects, loadProjects, createProject, openProject, deleteProject } = useProjectStore()
-  const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false)
+  const { data: projects } = useSuspenseQuery(projectsQueryOptions())
+  const createProjectMutation = useCreateProject()
+  const openProjectMutation = useOpenProject()
+  const deleteProjectMutation = useDeleteProject()
+  const updateSettingsMutation = useUpdateProjectSettings()
 
-  useEffect(() => {
-    loadProjects()
-  }, [loadProjects])
+  const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false)
 
   const handleSelectProject = (projectId: string) => {
     navigate({ to: "/project/$projectId", params: { projectId } })
+  }
+
+  // Prefetch project data on hover for instant navigation
+  const handleProjectHover = (projectId: string) => {
+    queryClient.prefetchQuery(projectQueryOptions(projectId))
+    queryClient.prefetchQuery(terminalsQueryOptions(projectId))
+  }
+
+  const handleDeleteProject = async (projectId: string) => {
+    await deleteProjectMutation.mutateAsync(projectId)
+    if (projectId === currentProjectId) {
+      navigate({ to: "/" })
+    }
   }
 
   return (
@@ -85,7 +129,8 @@ export function ProjectSidebar() {
                 project={project}
                 isSelected={project.id === currentProjectId}
                 onSelect={() => handleSelectProject(project.id)}
-                onDelete={() => deleteProject(project.id)}
+                onHover={() => handleProjectHover(project.id)}
+                onDelete={() => handleDeleteProject(project.id)}
               />
             ))
           )}
@@ -98,10 +143,9 @@ export function ProjectSidebar() {
           isOpen={isCreateDialogOpen}
           onClose={() => setIsCreateDialogOpen(false)}
           onCreateNew={async (path, initGit, defaultClientId) => {
-            const project = await createProject(path, initGit)
-            // Update default client setting if selected
+            const project = await createProjectMutation.mutateAsync({ path, initGit })
             if (defaultClientId) {
-              await projectApi.updateSettings({
+              await updateSettingsMutation.mutateAsync({
                 project_id: project.id,
                 default_client: defaultClientId,
                 auto_create_worktree: false,
@@ -112,10 +156,9 @@ export function ProjectSidebar() {
             navigate({ to: "/project/$projectId", params: { projectId: project.id } })
           }}
           onOpenExisting={async (path, defaultClientId) => {
-            const project = await openProject(path)
-            // Update default client setting if selected
+            const project = await openProjectMutation.mutateAsync(path)
             if (defaultClientId) {
-              await projectApi.updateSettings({
+              await updateSettingsMutation.mutateAsync({
                 project_id: project.id,
                 default_client: defaultClientId,
                 auto_create_worktree: false,
@@ -135,15 +178,17 @@ interface ProjectItemProps {
   project: ProjectSummary
   isSelected: boolean
   onSelect: () => void
+  onHover: () => void
   onDelete: () => void
 }
 
-function ProjectItem({ project, isSelected, onSelect, onDelete }: ProjectItemProps) {
+function ProjectItem({ project, isSelected, onSelect, onHover, onDelete }: ProjectItemProps) {
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>
         <button
           onClick={onSelect}
+          onMouseEnter={onHover}
           className={`w-full text-left px-4 py-2 text-sm transition-colors border-b border-border/50 hover:bg-accent/50 ${
             isSelected ? "bg-accent" : ""
           }`}
@@ -185,7 +230,8 @@ function CreateProjectDialog({ isOpen, onClose, onCreateNew, onOpenExisting }: C
   const [pathWarning, setPathWarning] = useState<string | null>(null)
   const [isValidatingPath, setIsValidatingPath] = useState(false)
 
-  const { clients, loadClients } = useClientStore()
+  // Use regular useQuery for dialog content - don't suspend the whole sidebar for this
+  const { data: clients = [] } = useQuery(clientsQueryOptions())
 
   // Validate that the folder is empty or doesn't exist
   const validateNewPath = useCallback(async (path: string) => {
@@ -217,14 +263,14 @@ function CreateProjectDialog({ isOpen, onClose, onCreateNew, onOpenExisting }: C
     if (activeTab === "new" && newPath) {
       const timeoutId = setTimeout(() => {
         validateNewPath(newPath)
-      }, 300) // Debounce validation
+      }, 300)
       return () => clearTimeout(timeoutId)
     } else {
       setPathWarning(null)
     }
   }, [newPath, activeTab, validateNewPath])
 
-  // Reset state and load clients when dialog opens
+  // Reset state when dialog opens
   useEffect(() => {
     if (isOpen) {
       setActiveTab("new")
@@ -236,11 +282,9 @@ function CreateProjectDialog({ isOpen, onClose, onCreateNew, onOpenExisting }: C
       setDefaultClient("")
       setPathWarning(null)
       setIsValidatingPath(false)
-      loadClients()
     }
-  }, [isOpen, loadClients])
+  }, [isOpen])
 
-  // Reset state when dialog closes
   const handleClose = () => {
     setActiveTab("new")
     setNewPath("")

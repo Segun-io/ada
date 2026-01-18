@@ -1,7 +1,8 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router"
-import { useEffect, useState, useRef, useCallback } from "react"
+import { createFileRoute } from "@tanstack/react-router"
+import { useEffect, useState, useRef } from "react"
 import { Plus, Terminal as TerminalIcon, Settings, Loader2, Home, FolderOpen, TreeDeciduous, RefreshCw } from "lucide-react"
 import { listen } from "@tauri-apps/api/event"
+import { useSuspenseQuery, useQueryClient } from "@tanstack/react-query"
 
 import { Button } from "@/components/ui/button"
 import {
@@ -23,97 +24,151 @@ import {
 } from "@/components/ui/select"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 
-import { useProjectStore } from "@/stores/project-store"
-import { useTerminalStore } from "@/stores/terminal-store"
-import { useClientStore } from "@/stores/client-store"
-import { gitApi, projectApi } from "@/lib/api"
+import { useTerminalUIStore } from "@/stores/terminal-ui-store"
+import {
+  projectQueryOptions,
+  terminalsQueryOptions,
+  clientsQueryOptions,
+  branchesQueryOptions,
+  currentBranchQueryOptions,
+  worktreesQueryOptions,
+  useCreateTerminal,
+  useCreateMainTerminal,
+  useCloseTerminal,
+  useRestartTerminal,
+  useMarkTerminalStopped,
+  useSwitchTerminalAgent,
+  useUpdateProjectSettings,
+} from "@/lib/queries"
 import type { BranchInfo, TerminalOutput, TerminalMode, WorktreeInfo } from "@/lib/types"
 import { TerminalView } from "@/components/terminal-view"
 import { TerminalStrip } from "@/components/terminal-strip"
 import { ProjectSettings } from "@/components/project-settings"
 
 export const Route = createFileRoute("/project/$projectId")({
+  // Prefetch data in the loader
+  loader: async ({ context: { queryClient }, params: { projectId } }) => {
+    // Prefetch critical data in parallel
+    await Promise.all([
+      queryClient.ensureQueryData(projectQueryOptions(projectId)),
+      queryClient.ensureQueryData(terminalsQueryOptions(projectId)),
+      queryClient.ensureQueryData(clientsQueryOptions()),
+    ])
+  },
+  // Show pending component while loading
+  pendingComponent: () => (
+    <div className="flex h-full items-center justify-center">
+      <div className="text-center">
+        <div className="mb-4 animate-spin rounded-full border-4 border-muted border-t-primary h-8 w-8 mx-auto" />
+        <p className="text-muted-foreground">Loading project...</p>
+      </div>
+    </div>
+  ),
+  // Handle errors
+  errorComponent: ({ error }) => (
+    <div className="flex h-full items-center justify-center">
+      <div className="text-center text-destructive">
+        <p>Failed to load project</p>
+        <p className="text-sm text-muted-foreground">{String(error)}</p>
+      </div>
+    </div>
+  ),
   component: ProjectPage,
 })
 
 function ProjectPage() {
   const { projectId } = Route.useParams()
-  const navigate = useNavigate()
+  const queryClient = useQueryClient()
 
-  const { projects, currentProject, loadProject, isLoading: isProjectLoading, error: projectError } = useProjectStore()
+  // TanStack Query with Suspense - data is guaranteed to be available
+  const { data: currentProject } = useSuspenseQuery(projectQueryOptions(projectId))
+  const { data: terminals } = useSuspenseQuery(terminalsQueryOptions(projectId))
+  const { data: clients } = useSuspenseQuery(clientsQueryOptions())
+
+  // Git data - conditional queries (still use useSuspenseQuery but conditionally fetch)
+  const isGitRepo = currentProject.is_git_repo
+  const { data: currentBranch = "" } = useSuspenseQuery({
+    ...currentBranchQueryOptions(projectId),
+    queryFn: isGitRepo ? currentBranchQueryOptions(projectId).queryFn : async () => "",
+  })
+  const { data: worktrees = [] } = useSuspenseQuery({
+    ...worktreesQueryOptions(projectId),
+    queryFn: isGitRepo ? worktreesQueryOptions(projectId).queryFn : async () => [],
+  })
+  const { data: branches = [] } = useSuspenseQuery({
+    ...branchesQueryOptions(projectId),
+    queryFn: isGitRepo ? branchesQueryOptions(projectId).queryFn : async () => [],
+  })
+
+  // Mutations
+  const createTerminalMutation = useCreateTerminal()
+  const createMainTerminalMutation = useCreateMainTerminal()
+  const closeTerminalMutation = useCloseTerminal()
+  const restartTerminalMutation = useRestartTerminal()
+  const markTerminalStoppedMutation = useMarkTerminalStopped()
+  const switchTerminalAgentMutation = useSwitchTerminalAgent()
+  const updateProjectSettingsMutation = useUpdateProjectSettings()
+
+  // UI state from Zustand
   const {
-    terminals,
     activeTerminalId,
-    loadTerminals,
-    createTerminal,
-    createMainTerminal,
-    closeTerminal,
-    restartTerminal,
-    markTerminalStopped,
-    switchTerminalAgent,
-    loadTerminalHistory,
     setActiveTerminal,
+    initializeTerminals,
     appendOutput,
+    loadTerminalHistory,
     getActivity,
-  } = useTerminalStore()
-  const { clients, loadClients, detectInstalledClients } = useClientStore()
+    clearTerminalOutput,
+    removeTerminal,
+    resetActivityToIdle,
+  } = useTerminalUIStore()
 
-  const [, setBranches] = useState<BranchInfo[]>([])
-  const [worktrees, setWorktrees] = useState<WorktreeInfo[]>([])
-  const [currentBranch, setCurrentBranch] = useState<string>("")
   const [isCreateTerminalOpen, setIsCreateTerminalOpen] = useState(false)
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [, setTick] = useState(0)
-  const [hasInitialized, setHasInitialized] = useState(false)
   const mainTerminalCreatingRef = useRef(false)
-
-  // Load project and terminals
-  useEffect(() => {
-    setHasInitialized(true)
-    loadProject(projectId)
-    loadTerminals(projectId)
-    loadClients()
-    detectInstalledClients()
-  }, [projectId, loadProject, loadTerminals, loadClients, detectInstalledClients])
 
   // Find main terminal
   const mainTerminal = terminals.find(t => t.is_main) || null
 
+  // Initialize terminal UI state when terminals change
+  useEffect(() => {
+    if (terminals.length > 0) {
+      const terminalIds = terminals.map(t => t.id)
+      const mainId = mainTerminal?.id ?? null
+      initializeTerminals(terminalIds, mainId)
+    }
+  }, [terminals, mainTerminal?.id, initializeTerminals])
+
   // Auto-create main terminal when default_client is set and no main terminal exists
   useEffect(() => {
     if (
-      currentProject?.settings.default_client &&
+      currentProject.settings.default_client &&
       !mainTerminal &&
       !mainTerminalCreatingRef.current &&
-      clients.length > 0
+      clients.length > 0 &&
+      !createMainTerminalMutation.isPending
     ) {
       const defaultClient = clients.find(c => c.id === currentProject.settings.default_client && c.installed)
       if (defaultClient) {
         mainTerminalCreatingRef.current = true
-        createMainTerminal(projectId, defaultClient.id)
+        createMainTerminalMutation.mutateAsync({ projectId, clientId: defaultClient.id })
           .catch(console.error)
           .finally(() => {
             mainTerminalCreatingRef.current = false
           })
       }
     }
-  }, [currentProject?.settings.default_client, mainTerminal, clients, projectId, createMainTerminal])
+  }, [currentProject.settings.default_client, mainTerminal, clients, projectId, createMainTerminalMutation])
 
   // Handle selecting a default client from the terminal strip
   const handleSelectDefaultClient = async (clientId: string) => {
-    if (!currentProject) return
-
-    // Save as project's default client
-    await projectApi.updateSettings({
+    await updateProjectSettingsMutation.mutateAsync({
       project_id: projectId,
       default_client: clientId,
       auto_create_worktree: currentProject.settings.auto_create_worktree,
       worktree_base_path: currentProject.settings.worktree_base_path,
     })
-
-    // Reload project to get updated settings (this will trigger main terminal creation)
-    loadProject(projectId)
   }
 
   // Handle selecting main terminal
@@ -123,18 +178,13 @@ function ProjectPage() {
     }
   }
 
-  // Handle refreshing project state (checks for git init, etc.)
+  // Handle refreshing project state
   const handleRefreshProject = async () => {
     setIsRefreshing(true)
     try {
-      await loadProject(projectId)
-      // Also refresh git data
-      if (currentProject?.is_git_repo) {
-        await Promise.all([
-          gitApi.getBranches(projectId).then(setBranches),
-          gitApi.getCurrentBranch(projectId).then(setCurrentBranch),
-          gitApi.listWorktrees(projectId).then(setWorktrees),
-        ])
+      await queryClient.invalidateQueries({ queryKey: ["projects", "detail", projectId] })
+      if (currentProject.is_git_repo) {
+        await queryClient.invalidateQueries({ queryKey: ["git", projectId] })
       }
     } catch (err) {
       console.error("Failed to refresh project:", err)
@@ -143,12 +193,11 @@ function ProjectPage() {
     }
   }
 
-  // Handle opening new terminal dialog (refresh project first)
+  // Handle opening new terminal dialog
   const handleNewTerminal = async () => {
-    // Refresh project state first to detect any changes (e.g., git init)
     setIsRefreshing(true)
     try {
-      await loadProject(projectId)
+      await queryClient.invalidateQueries({ queryKey: ["projects", "detail", projectId] })
     } catch (err) {
       console.error("Failed to refresh project:", err)
     } finally {
@@ -157,28 +206,29 @@ function ProjectPage() {
     setIsCreateTerminalOpen(true)
   }
 
+  // Handle close terminal
+  const handleCloseTerminal = async (terminalId: string) => {
+    const terminal = terminals.find(t => t.id === terminalId)
+    if (terminal?.is_main) return
+
+    await closeTerminalMutation.mutateAsync({ terminalId, projectId })
+    removeTerminal(terminalId, mainTerminal?.id ?? null, terminals.filter(t => t.id !== terminalId).map(t => t.id))
+  }
+
+  // Handle restart terminal
+  const handleRestartTerminal = async (terminalId: string) => {
+    await restartTerminalMutation.mutateAsync(terminalId)
+    resetActivityToIdle(terminalId)
+  }
+
+  // Handle switch agent
+  const handleSwitchAgent = async (terminalId: string, newClientId: string) => {
+    await switchTerminalAgentMutation.mutateAsync({ terminalId, newClientId })
+    clearTerminalOutput(terminalId)
+  }
+
   // Check if main terminal is active
   const isMainTerminalActive = mainTerminal ? activeTerminalId === mainTerminal.id : false
-
-  // Load branches and worktrees when project is loaded
-  useEffect(() => {
-    if (currentProject) {
-      gitApi.getBranches(projectId).then(setBranches).catch(console.error)
-      gitApi.getCurrentBranch(projectId).then(setCurrentBranch).catch(console.error)
-      gitApi.listWorktrees(projectId).then(setWorktrees).catch(console.error)
-    }
-  }, [currentProject, projectId])
-
-  // Callback to refresh branches and worktrees (for dialog)
-  const refreshGitData = useCallback(async () => {
-    const [branchesData, worktreesData] = await Promise.all([
-      gitApi.getBranches(projectId),
-      gitApi.listWorktrees(projectId),
-    ])
-    setBranches(branchesData)
-    setWorktrees(worktreesData)
-    return { branches: branchesData, worktrees: worktreesData }
-  }, [projectId])
 
   // Listen for terminal output events
   useEffect(() => {
@@ -195,13 +245,13 @@ function ProjectPage() {
   useEffect(() => {
     const unlisten = listen<string>("terminal-closed", (event) => {
       console.log("Terminal closed:", event.payload)
-      markTerminalStopped(event.payload)
+      markTerminalStoppedMutation.mutate(event.payload)
     })
 
     return () => {
       unlisten.then((fn) => fn())
     }
-  }, [markTerminalStopped])
+  }, [markTerminalStoppedMutation])
 
   // Load terminal history when active terminal changes
   useEffect(() => {
@@ -218,62 +268,11 @@ function ProjectPage() {
     return () => clearInterval(interval)
   }, [])
 
-  // Check if project exists in the list
-  const projectExists = projects.some(p => p.id === projectId)
-
-  // Track if we've ever successfully loaded this project (reset when projectId changes)
-  const hadProjectLoaded = useRef(false)
-  const lastProjectId = useRef(projectId)
-  if (lastProjectId.current !== projectId) {
-    hadProjectLoaded.current = false
-    lastProjectId.current = projectId
-  }
-  if (currentProject?.id === projectId) {
-    hadProjectLoaded.current = true
-  }
-
-  // Redirect to home if:
-  // 1. Project failed to load (error from backend)
-  // 2. Project was deleted (we had it loaded, now it's gone)
-  useEffect(() => {
-    // Don't redirect before initialization or while still loading
-    if (!hasInitialized || isProjectLoading) return
-
-    // Project load failed with error
-    if (projectError) {
-      navigate({ to: "/" })
-      return
-    }
-
-    // Project was deleted: we previously had it loaded, but now currentProject is null
-    // and it's no longer in the projects list
-    if (hadProjectLoaded.current && !currentProject && !projectExists) {
-      navigate({ to: "/" })
-    }
-  }, [hasInitialized, projectError, isProjectLoading, projectExists, currentProject, navigate])
-
-  // Show loading while initializing or loading
-  if (!hasInitialized || isProjectLoading) {
-    return (
-      <div className="flex h-full items-center justify-center">
-        <div className="text-center">
-          <div className="mb-4 animate-spin rounded-full border-4 border-muted border-t-primary h-8 w-8 mx-auto" />
-          <p className="text-muted-foreground">Loading project...</p>
-        </div>
-      </div>
-    )
-  }
-
-  // If we're about to redirect (error or no project), show nothing
-  if (projectError || !currentProject || currentProject.id !== projectId) {
-    return null
-  }
-
   const activeTerminal = terminals.find((t) => t.id === activeTerminalId)
   const activeClientName = activeTerminal
     ? clients.find((c) => c.id === activeTerminal.client_id)?.name || activeTerminal.client_id
     : ""
-  const activeActivity = activeTerminalId ? getActivity(activeTerminalId) : "idle"
+  const activeActivity = activeTerminalId ? getActivity(activeTerminalId, activeTerminal?.status) : "idle"
 
   // Get mode display info
   const getModeInfo = (mode: TerminalMode) => {
@@ -415,9 +414,9 @@ function ProjectPage() {
               terminalId={activeTerminal.id}
               terminal={activeTerminal}
               clients={clients.filter(c => c.installed)}
-              onRestart={() => restartTerminal(activeTerminal.id)}
-              onSwitchAgent={(clientId) => switchTerminalAgent(activeTerminal.id, clientId)}
-              onClose={() => closeTerminal(activeTerminal.id)}
+              onRestart={() => handleRestartTerminal(activeTerminal.id)}
+              onSwitchAgent={(clientId) => handleSwitchAgent(activeTerminal.id, clientId)}
+              onClose={() => handleCloseTerminal(activeTerminal.id)}
             />
           ) : (
             <div className="flex h-full items-center justify-center">
@@ -439,11 +438,14 @@ function ProjectPage() {
         mainTerminal={mainTerminal}
         defaultClientId={currentProject.settings.default_client}
         isMainTerminalActive={isMainTerminalActive}
-        getActivity={getActivity}
+        getActivity={(id) => {
+          const terminal = terminals.find(t => t.id === id)
+          return getActivity(id, terminal?.status)
+        }}
         onSelectTerminal={setActiveTerminal}
         onSelectMainTerminal={handleSelectMainTerminal}
-        onCloseTerminal={closeTerminal}
-        onRestartTerminal={restartTerminal}
+        onCloseTerminal={handleCloseTerminal}
+        onRestartTerminal={handleRestartTerminal}
         onNewTerminal={handleNewTerminal}
         onSelectDefaultClient={handleSelectDefaultClient}
       />
@@ -458,10 +460,11 @@ function ProjectPage() {
           defaultClientId={currentProject.settings.default_client}
           existingTerminalNames={terminals.map(t => t.name)}
           worktrees={worktrees}
+          branches={branches}
           onClose={() => setIsCreateTerminalOpen(false)}
-          onRefreshData={refreshGitData}
           onCreate={async (request) => {
-            await createTerminal(request)
+            const newTerminal = await createTerminalMutation.mutateAsync(request)
+            setActiveTerminal(newTerminal.id)
             setIsCreateTerminalOpen(false)
           }}
         />
@@ -474,13 +477,10 @@ function ProjectPage() {
         open={isSettingsOpen}
         onOpenChange={setIsSettingsOpen}
         onSaved={async (updatedProject) => {
-          // Reload project to get updated settings
-          loadProject(updatedProject.id)
-
           // Sync main terminal with new default_client if it changed
           if (mainTerminal && updatedProject.settings.default_client) {
             if (mainTerminal.client_id !== updatedProject.settings.default_client) {
-              await switchTerminalAgent(mainTerminal.id, updatedProject.settings.default_client)
+              await handleSwitchAgent(mainTerminal.id, updatedProject.settings.default_client)
             }
           }
         }}
@@ -497,8 +497,8 @@ interface CreateTerminalDialogProps {
   defaultClientId: string | null
   existingTerminalNames: string[]
   worktrees: WorktreeInfo[]
+  branches: BranchInfo[]
   onClose: () => void
-  onRefreshData: () => Promise<{ branches: BranchInfo[]; worktrees: WorktreeInfo[] }>
   onCreate: (request: {
     project_id: string
     name: string
@@ -516,9 +516,9 @@ function CreateTerminalDialog({
   clients,
   defaultClientId,
   existingTerminalNames,
-  worktrees: initialWorktrees,
+  worktrees,
+  branches,
   onClose,
-  onRefreshData,
   onCreate,
 }: CreateTerminalDialogProps) {
   const [name, setName] = useState("")
@@ -531,28 +531,8 @@ function CreateTerminalDialog({
   const [newBranchName, setNewBranchName] = useState("")
   const [isCreating, setIsCreating] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [branches, setBranches] = useState<BranchInfo[]>([])
-  const [worktrees, setWorktrees] = useState<WorktreeInfo[]>(initialWorktrees)
-  const [isLoading, setIsLoading] = useState(true)
 
   const installedClients = clients.filter((c) => c.installed)
-
-  // Refresh branches and worktrees when dialog opens
-  useEffect(() => {
-    const loadData = async () => {
-      setIsLoading(true)
-      try {
-        const data = await onRefreshData()
-        setBranches(data.branches)
-        setWorktrees(data.worktrees)
-      } catch (err) {
-        console.error("Failed to load data:", err)
-      } finally {
-        setIsLoading(false)
-      }
-    }
-    loadData()
-  }, [onRefreshData])
 
   // Generate default terminal name based on mode
   const generateDefaultName = () => {
@@ -563,7 +543,6 @@ function CreateTerminalDialog({
         baseName = "main"
         break
       case "folder":
-        // Use the last segment of the folder path, or "folder" as fallback
         if (folderPath) {
           const segments = folderPath.split("/").filter(Boolean)
           baseName = segments[segments.length - 1] || "folder"
@@ -572,18 +551,15 @@ function CreateTerminalDialog({
         }
         break
       case "worktree":
-        // Use the branch name (either from existing worktree or new branch)
         if (worktreeMode === "existing" && selectedWorktree) {
           const wt = worktrees.find(w => w.path === selectedWorktree)
           if (wt?.branch) {
-            // Use last segment of branch name (e.g., "feature/auth" -> "auth")
             const segments = wt.branch.split("/").filter(Boolean)
             baseName = segments[segments.length - 1] || "worktree"
           } else {
             baseName = "worktree"
           }
         } else if (worktreeMode === "new" && newBranchName) {
-          // Use last segment of new branch name
           const segments = newBranchName.split("/").filter(Boolean)
           baseName = segments[segments.length - 1] || "worktree"
         } else {
@@ -594,10 +570,8 @@ function CreateTerminalDialog({
         baseName = "terminal"
     }
 
-    // Sanitize base name (replace non-alphanumeric with dash, lowercase)
     baseName = baseName.toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-")
 
-    // Find unique name with counter
     let counter = 1
     let candidateName = `${baseName}-${counter}`
     while (existingTerminalNames.includes(candidateName)) {
@@ -607,7 +581,6 @@ function CreateTerminalDialog({
     return candidateName
   }
 
-  // Validate terminal name uniqueness
   const nameError = name && existingTerminalNames.includes(name)
     ? "A terminal with this name already exists"
     : null
@@ -622,7 +595,6 @@ function CreateTerminalDialog({
     })
 
     if (selected) {
-      // Make path relative to project
       if (selected.startsWith(projectPath)) {
         const relativePath = selected.slice(projectPath.length).replace(/^[/\\]/, "")
         setFolderPath(relativePath || ".")
@@ -640,10 +612,8 @@ function CreateTerminalDialog({
       if (worktreeMode === "new" && (!baseBranch || !newBranchName)) return
     }
 
-    // Generate name if not provided
     const finalName = name.trim() || generateDefaultName()
 
-    // Final validation
     if (existingTerminalNames.includes(finalName)) {
       setError("A terminal with this name already exists")
       return
@@ -652,15 +622,12 @@ function CreateTerminalDialog({
     setIsCreating(true)
     setError(null)
     try {
-      // Determine worktree branch
       let worktreeBranch: string | null = null
       if (mode === "worktree") {
         if (worktreeMode === "existing") {
           const wt = worktrees.find(w => w.path === selectedWorktree)
           worktreeBranch = wt?.branch || null
         } else {
-          // For new worktree, we pass a special format: wt-baseBranch/newBranchName
-          // The backend will handle creating the worktree with git worktree add -b newBranchName .worktrees/newBranchName baseBranch
           worktreeBranch = `wt-${baseBranch}/${newBranchName}`
         }
       }
@@ -690,7 +657,6 @@ function CreateTerminalDialog({
     ))
   )
 
-  // Common input props to disable autocorrect
   const inputProps = {
     autoComplete: "off",
     autoCorrect: "off",
@@ -794,98 +760,89 @@ function CreateTerminalDialog({
 
             {isGitRepo && (
               <TabsContent value="worktree" className="mt-3 space-y-3">
-                {isLoading ? (
-                <div className="flex items-center justify-center py-4">
-                  <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                  <span className="text-xs text-muted-foreground">Loading...</span>
-                </div>
-              ) : (
-                <>
-                  {/* Worktree mode toggle */}
-                  <Tabs
-                    value={worktreeMode}
-                    onValueChange={(v) => {
-                      setWorktreeMode(v as typeof worktreeMode)
-                      setError(null) // Clear error when switching tabs
-                    }}
-                  >
-                    <TabsList className="grid w-full grid-cols-2 h-8">
-                      <TabsTrigger value="existing" className="text-xs">Use Existing</TabsTrigger>
-                      <TabsTrigger value="new" className="text-xs">Create New</TabsTrigger>
-                    </TabsList>
+                {/* Worktree mode toggle */}
+                <Tabs
+                  value={worktreeMode}
+                  onValueChange={(v) => {
+                    setWorktreeMode(v as typeof worktreeMode)
+                    setError(null)
+                  }}
+                >
+                  <TabsList className="grid w-full grid-cols-2 h-8">
+                    <TabsTrigger value="existing" className="text-xs">Use Existing</TabsTrigger>
+                    <TabsTrigger value="new" className="text-xs">Create New</TabsTrigger>
+                  </TabsList>
 
-                    <TabsContent value="existing" className="mt-2 space-y-2">
-                      {worktrees.length === 0 ? (
+                  <TabsContent value="existing" className="mt-2 space-y-2">
+                    {worktrees.length === 0 ? (
+                      <p className="text-xs text-muted-foreground py-2">
+                        No worktrees available. Create a new one instead.
+                      </p>
+                    ) : (
+                      <>
+                        <Label>Select Worktree</Label>
+                        <Select value={selectedWorktree} onValueChange={setSelectedWorktree}>
+                          <SelectTrigger>
+                            <SelectValue placeholder="Select a worktree" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {worktrees.map((wt) => (
+                              <SelectItem key={wt.path} value={wt.path}>
+                                {wt.branch} <span className="text-muted-foreground">({wt.path.split("/").pop()})</span>
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </>
+                    )}
+                  </TabsContent>
+
+                  <TabsContent value="new" className="mt-2 space-y-2">
+                    <div className="space-y-1">
+                      <Label>Base Branch</Label>
+                      {branches.filter(b => !b.is_remote).length === 0 ? (
                         <p className="text-xs text-muted-foreground py-2">
-                          No worktrees available. Create a new one instead.
+                          No local branches available.
                         </p>
                       ) : (
-                        <>
-                          <Label>Select Worktree</Label>
-                          <Select value={selectedWorktree} onValueChange={setSelectedWorktree}>
-                            <SelectTrigger>
-                              <SelectValue placeholder="Select a worktree" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {worktrees.map((wt) => (
-                                <SelectItem key={wt.path} value={wt.path}>
-                                  {wt.branch} <span className="text-muted-foreground">({wt.path.split("/").pop()})</span>
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </>
+                        <Select value={baseBranch} onValueChange={setBaseBranch}>
+                          <SelectTrigger>
+                            <SelectValue placeholder="Select base branch" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {branches.filter(b => !b.is_remote).map((b) => (
+                              <SelectItem key={b.name} value={b.name}>
+                                {b.name} {b.is_current && "(current)"}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
                       )}
-                    </TabsContent>
+                    </div>
 
-                    <TabsContent value="new" className="mt-2 space-y-2">
-                      <div className="space-y-1">
-                        <Label>Base Branch</Label>
-                        {branches.filter(b => !b.is_remote).length === 0 ? (
-                          <p className="text-xs text-muted-foreground py-2">
-                            No local branches available.
-                          </p>
-                        ) : (
-                          <Select value={baseBranch} onValueChange={setBaseBranch}>
-                            <SelectTrigger>
-                              <SelectValue placeholder="Select base branch" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {branches.filter(b => !b.is_remote).map((b) => (
-                                <SelectItem key={b.name} value={b.name}>
-                                  {b.name} {b.is_current && "(current)"}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        )}
+                    <div className="space-y-1">
+                      <Label>New Branch Name</Label>
+                      <Input
+                        value={newBranchName}
+                        onChange={(e) => setNewBranchName(e.target.value.replace(/\s+/g, "-"))}
+                        placeholder="feature/my-feature"
+                        {...inputProps}
+                      />
+                    </div>
+
+                    {baseBranch && newBranchName && (
+                      <div className="rounded-md bg-muted p-2 space-y-1">
+                        <p className="text-xs font-medium">Worktree will be created:</p>
+                        <code className="text-xs block break-all">
+                          wt-{baseBranch}/{newBranchName}
+                        </code>
+                        <p className="text-[10px] text-muted-foreground">
+                          Branch <span className="font-mono">{newBranchName}</span> from <span className="font-mono">{baseBranch}</span>
+                        </p>
                       </div>
-
-                      <div className="space-y-1">
-                        <Label>New Branch Name</Label>
-                        <Input
-                          value={newBranchName}
-                          onChange={(e) => setNewBranchName(e.target.value.replace(/\s+/g, "-"))}
-                          placeholder="feature/my-feature"
-                          {...inputProps}
-                        />
-                      </div>
-
-                      {baseBranch && newBranchName && (
-                        <div className="rounded-md bg-muted p-2 space-y-1">
-                          <p className="text-xs font-medium">Worktree will be created:</p>
-                          <code className="text-xs block break-all">
-                            wt-{baseBranch}/{newBranchName}
-                          </code>
-                          <p className="text-[10px] text-muted-foreground">
-                            Branch <span className="font-mono">{newBranchName}</span> from <span className="font-mono">{baseBranch}</span>
-                          </p>
-                        </div>
-                      )}
-                    </TabsContent>
-                  </Tabs>
-                </>
-              )}
+                    )}
+                  </TabsContent>
+                </Tabs>
               </TabsContent>
             )}
           </Tabs>
@@ -902,11 +859,10 @@ function CreateTerminalDialog({
         <Button variant="outline" onClick={onClose}>
           Cancel
         </Button>
-        <Button onClick={handleCreate} disabled={!isValid || isCreating || isLoading}>
+        <Button onClick={handleCreate} disabled={!isValid || isCreating}>
           {isCreating ? "Creating..." : "Create Terminal"}
         </Button>
       </DialogFooter>
     </DialogContent>
   )
 }
-

@@ -6,7 +6,7 @@ import { SearchAddon } from "@xterm/addon-search"
 import { listen } from "@tauri-apps/api/event"
 import { Search, X, ChevronUp, ChevronDown, RotateCcw, RefreshCw, XCircle } from "lucide-react"
 
-import { useTerminalStore } from "@/stores/terminal-store"
+import { useTerminalUIStore } from "@/stores/terminal-ui-store"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import {
@@ -41,7 +41,7 @@ export function TerminalView({
   const searchAddonRef = useRef<SearchAddon | null>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
 
-  const { writeToTerminal, terminalOutputs } = useTerminalStore()
+  const { writeToTerminal, terminalOutputs } = useTerminalUIStore()
 
   const [isSearchOpen, setIsSearchOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState("")

@@ -1,0 +1,142 @@
+import { queryOptions, useMutation, useQueryClient } from "@tanstack/react-query"
+import { terminalApi } from "../api"
+import { queryKeys } from "../query-client"
+import type { CreateTerminalRequest } from "../types"
+
+// Query Options
+export const terminalsQueryOptions = (projectId: string) =>
+  queryOptions({
+    queryKey: queryKeys.terminals.list(projectId),
+    queryFn: () => terminalApi.list(projectId),
+    enabled: !!projectId,
+  })
+
+export const terminalQueryOptions = (terminalId: string) =>
+  queryOptions({
+    queryKey: queryKeys.terminals.detail(terminalId),
+    queryFn: () => terminalApi.get(terminalId),
+    enabled: !!terminalId,
+  })
+
+export const terminalHistoryQueryOptions = (terminalId: string) =>
+  queryOptions({
+    queryKey: queryKeys.terminals.history(terminalId),
+    queryFn: () => terminalApi.getHistory(terminalId),
+    enabled: !!terminalId,
+  })
+
+// Mutations
+export function useCreateTerminal() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: (request: CreateTerminalRequest) => terminalApi.create(request),
+    onSuccess: (newTerminal) => {
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.terminals.list(newTerminal.project_id),
+      })
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.projects.detail(newTerminal.project_id),
+      })
+    },
+  })
+}
+
+export function useCreateMainTerminal() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: ({ projectId, clientId }: { projectId: string; clientId: string }) =>
+      terminalApi.createMain(projectId, clientId),
+    onSuccess: (newTerminal) => {
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.terminals.list(newTerminal.project_id),
+      })
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.projects.detail(newTerminal.project_id),
+      })
+    },
+  })
+}
+
+export function useCloseTerminal() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: ({ terminalId, projectId }: { terminalId: string; projectId: string }) =>
+      terminalApi.close(terminalId).then(() => ({ terminalId, projectId })),
+    onSuccess: (_, { projectId }) => {
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.terminals.list(projectId),
+      })
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.projects.detail(projectId),
+      })
+    },
+  })
+}
+
+export function useRestartTerminal() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: (terminalId: string) => terminalApi.restart(terminalId),
+    onSuccess: (updatedTerminal) => {
+      queryClient.setQueryData(
+        queryKeys.terminals.detail(updatedTerminal.id),
+        updatedTerminal
+      )
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.terminals.list(updatedTerminal.project_id),
+      })
+    },
+  })
+}
+
+export function useMarkTerminalStopped() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: (terminalId: string) => terminalApi.markStopped(terminalId),
+    onSuccess: (updatedTerminal) => {
+      queryClient.setQueryData(
+        queryKeys.terminals.detail(updatedTerminal.id),
+        updatedTerminal
+      )
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.terminals.list(updatedTerminal.project_id),
+      })
+    },
+  })
+}
+
+export function useSwitchTerminalAgent() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: ({ terminalId, newClientId }: { terminalId: string; newClientId: string }) =>
+      terminalApi.switchAgent(terminalId, newClientId),
+    onSuccess: (updatedTerminal) => {
+      queryClient.setQueryData(
+        queryKeys.terminals.detail(updatedTerminal.id),
+        updatedTerminal
+      )
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.terminals.list(updatedTerminal.project_id),
+      })
+    },
+  })
+}
+
+export function useWriteTerminal() {
+  return useMutation({
+    mutationFn: ({ terminalId, data }: { terminalId: string; data: string }) =>
+      terminalApi.write(terminalId, data),
+  })
+}
+
+export function useResizeTerminal() {
+  return useMutation({
+    mutationFn: terminalApi.resize,
+  })
+}
