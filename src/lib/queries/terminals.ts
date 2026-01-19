@@ -1,13 +1,21 @@
 import { queryOptions, useMutation, useQueryClient } from "@tanstack/react-query"
 import { terminalApi } from "../api"
 import { queryKeys } from "../query-client"
+import { unseenStore } from "@/stores/unseen-store"
 import type { CreateTerminalRequest } from "../types"
 
 // Query Options
 export const terminalsQueryOptions = (projectId: string) =>
   queryOptions({
     queryKey: queryKeys.terminals.list(projectId),
-    queryFn: () => terminalApi.list(projectId),
+    queryFn: async () => {
+      const terminals = await terminalApi.list(projectId)
+      // Register terminals with unseen store for O(1) lookups
+      unseenStore.registerTerminals(
+        terminals.map((t) => ({ id: t.id, project_id: t.project_id }))
+      )
+      return terminals
+    },
     enabled: !!projectId,
   })
 
@@ -32,6 +40,9 @@ export function useCreateTerminal() {
   return useMutation({
     mutationFn: (request: CreateTerminalRequest) => terminalApi.create(request),
     onSuccess: (newTerminal) => {
+      // Register new terminal with unseen store immediately
+      unseenStore.registerTerminal(newTerminal.id, newTerminal.project_id)
+
       queryClient.invalidateQueries({
         queryKey: queryKeys.terminals.list(newTerminal.project_id),
       })
@@ -49,6 +60,9 @@ export function useCreateMainTerminal() {
     mutationFn: ({ projectId, clientId }: { projectId: string; clientId: string }) =>
       terminalApi.createMain(projectId, clientId),
     onSuccess: (newTerminal) => {
+      // Register new terminal with unseen store immediately
+      unseenStore.registerTerminal(newTerminal.id, newTerminal.project_id)
+
       queryClient.invalidateQueries({
         queryKey: queryKeys.terminals.list(newTerminal.project_id),
       })
@@ -85,15 +99,20 @@ export function useCloseTerminal() {
         }
       )
 
+      // Unregister from unseen store
+      unseenStore.unregisterTerminal(terminalId)
+
       return { previousTerminals }
     },
-    onError: (_err, { projectId }, context) => {
+    onError: (_err, { projectId, terminalId }, context) => {
       // Rollback on error
       if (context?.previousTerminals) {
         queryClient.setQueryData(
           queryKeys.terminals.list(projectId),
           context.previousTerminals
         )
+        // Re-register if rollback
+        unseenStore.registerTerminal(terminalId, projectId)
       }
     },
     onSettled: (_, __, { projectId }) => {

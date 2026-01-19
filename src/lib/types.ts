@@ -37,7 +37,6 @@ export interface CreateProjectRequest {
 
 // Terminal types
 export type TerminalStatus = "starting" | "running" | "stopped" | "error"
-export type AgentActivity = "idle" | "running" | "waiting_for_user" | "done"
 export type TerminalMode = "main" | "folder" | "current_branch" | "worktree"
 
 export interface TerminalInfo {
@@ -53,12 +52,6 @@ export interface TerminalInfo {
   mode: TerminalMode
   is_main: boolean
   folder_path: string | null
-}
-
-// Extended terminal info with frontend-tracked activity
-export interface TerminalWithActivity extends TerminalInfo {
-  activity: AgentActivity
-  lastActivityAt: number
 }
 
 export interface CreateTerminalRequest {

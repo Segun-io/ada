@@ -1,5 +1,5 @@
-import { useState, useCallback, memo, useEffect } from "react"
-import { Plus, X, RotateCcw, Loader2, Home, Bot } from "lucide-react"
+import { useState, useCallback, memo } from "react"
+import { Plus, X, RotateCcw, Home, Bot, Circle } from "lucide-react"
 import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area"
 import { Button } from "@/components/ui/button"
 import {
@@ -11,12 +11,33 @@ import {
 } from "@/components/ui/select"
 import { ConfirmationDialog } from "@/components/confirmation-dialog"
 import { cn } from "@/lib/utils"
-import { getModeInfo, getActivityBorderClass } from "@/lib/terminal-utils"
-import { useTerminalActivityWithRefresh } from "@/lib/tauri-events"
-import type { TerminalInfo, ClientSummary, AgentActivity } from "@/lib/types"
+import { getModeInfo } from "@/lib/terminal-utils"
+import { useTerminalHasUnseen } from "@/lib/tauri-events"
+import type { TerminalInfo, ClientSummary, TerminalStatus } from "@/lib/types"
 
-// Idle timeout for refresh scheduling
-const IDLE_TIMEOUT = 5000
+// Get border class based on unseen state and status
+const getStatusBorderClass = (hasUnseen: boolean, status?: TerminalStatus): string => {
+  if (status === "stopped") return "border-yellow-500/50"
+  if (hasUnseen) return "border-orange-500 animate-pulse shadow-[0_0_12px_rgba(249,115,22,0.6)]"
+  if (status === "running") return "border-green-500/50"
+  return "border-gray-600/50"
+}
+
+// Get status indicator content
+const getStatusIndicator = (hasUnseen: boolean, isStopped: boolean) => {
+  if (isStopped) {
+    return <span className="text-[8px] text-yellow-500 font-mono">stopped</span>
+  }
+  if (hasUnseen) {
+    return (
+      <div className="flex items-center gap-1">
+        <Circle className="h-2 w-2 fill-orange-400 text-orange-400 animate-pulse" />
+        <span className="text-[8px] text-orange-400 font-mono">new output</span>
+      </div>
+    )
+  }
+  return <span className="text-[8px] text-muted-foreground font-mono opacity-50">ready</span>
+}
 
 interface TerminalStripProps {
   terminals: TerminalInfo[]
@@ -29,30 +50,6 @@ interface TerminalStripProps {
   onRestartTerminal: (terminalId: string) => void
   onNewTerminal: () => void
   onSelectDefaultClient: (clientId: string) => void
-}
-
-// Get activity indicator content
-const getActivityIndicator = (activity: AgentActivity, isStopped: boolean) => {
-  if (isStopped) {
-    return <span className="text-[8px] text-yellow-500 font-mono">stopped</span>
-  }
-  switch (activity) {
-    case "running":
-      return (
-        <div className="flex items-center gap-0.5">
-          <span className="h-1 w-1 rounded-full bg-blue-400 animate-bounce" style={{ animationDelay: "0ms" }} />
-          <span className="h-1 w-1 rounded-full bg-blue-400 animate-bounce" style={{ animationDelay: "150ms" }} />
-          <span className="h-1 w-1 rounded-full bg-blue-400 animate-bounce" style={{ animationDelay: "300ms" }} />
-        </div>
-      )
-    case "waiting_for_user":
-      return <Loader2 className="h-4 w-4 text-orange-400 animate-spin" />
-    case "done":
-      return <span className="text-[8px] text-green-500 font-mono">done</span>
-    case "idle":
-    default:
-      return <span className="text-[8px] text-muted-foreground font-mono opacity-50">idle</span>
-  }
 }
 
 export function TerminalStrip({
@@ -174,26 +171,8 @@ function MainTerminalCardWrapper({
   onRestart,
   onSelectClient,
 }: MainTerminalCardWrapperProps) {
-  // Use TanStack Query for activity (populated by Tauri events)
-  const { activity, lastActivityAt } = useTerminalActivityWithRefresh(
-    mainTerminal?.id ?? "",
-    mainTerminal?.status
-  )
-
-  // Schedule re-render after idle timeout to update display
-  const [, forceUpdate] = useState(0)
-  useEffect(() => {
-    if (lastActivityAt === 0 || activity === "idle") return
-
-    const timeSinceActivity = Date.now() - lastActivityAt
-    if (timeSinceActivity < IDLE_TIMEOUT) {
-      const timeout = setTimeout(
-        () => forceUpdate((n) => n + 1),
-        IDLE_TIMEOUT - timeSinceActivity + 100
-      )
-      return () => clearTimeout(timeout)
-    }
-  }, [lastActivityAt, activity])
+  // Check if this terminal has unseen output
+  const hasUnseen = useTerminalHasUnseen(mainTerminal?.id ?? "")
 
   const handleSelect = useCallback(() => {
     if (mainTerminal) {
@@ -212,7 +191,7 @@ function MainTerminalCardWrapper({
       mainTerminal={mainTerminal}
       defaultClientId={defaultClientId}
       installedClients={installedClients}
-      activity={activity}
+      hasUnseen={hasUnseen && !isActive}
       isActive={isActive}
       onSelect={handleSelect}
       onRestart={mainTerminal ? handleRestart : undefined}
@@ -236,26 +215,8 @@ function TerminalCardWrapper({
   onClose,
   onRestart,
 }: TerminalCardWrapperProps) {
-  // Use TanStack Query for activity (populated by Tauri events)
-  const { activity, lastActivityAt } = useTerminalActivityWithRefresh(
-    terminal.id,
-    terminal.status
-  )
-
-  // Schedule re-render after idle timeout to update display
-  const [, forceUpdate] = useState(0)
-  useEffect(() => {
-    if (lastActivityAt === 0 || activity === "idle") return
-
-    const timeSinceActivity = Date.now() - lastActivityAt
-    if (timeSinceActivity < IDLE_TIMEOUT) {
-      const timeout = setTimeout(
-        () => forceUpdate((n) => n + 1),
-        IDLE_TIMEOUT - timeSinceActivity + 100
-      )
-      return () => clearTimeout(timeout)
-    }
-  }, [lastActivityAt, activity])
+  // Check if this terminal has unseen output
+  const hasUnseen = useTerminalHasUnseen(terminal.id)
 
   const handleSelect = useCallback(() => {
     onSelect(terminal.id)
@@ -272,7 +233,7 @@ function TerminalCardWrapper({
   return (
     <TerminalCard
       terminal={terminal}
-      activity={activity}
+      hasUnseen={hasUnseen && !isActive}
       isActive={isActive}
       onSelect={handleSelect}
       onClose={handleClose}
@@ -289,7 +250,7 @@ interface MainTerminalCardProps {
   mainTerminal: TerminalInfo | null
   defaultClientId: string | null
   installedClients: ClientSummary[]
-  activity: AgentActivity
+  hasUnseen: boolean
   isActive: boolean
   onSelect: () => void
   onRestart?: () => void
@@ -300,7 +261,7 @@ const MainTerminalCard = memo(function MainTerminalCard({
   mainTerminal,
   defaultClientId,
   installedClients,
-  activity,
+  hasUnseen,
   isActive,
   onSelect,
   onRestart,
@@ -349,6 +310,29 @@ const MainTerminalCard = memo(function MainTerminalCard({
     )
   }
 
+  // Agent selected but main terminal not yet created - show initializing state
+  if (!mainTerminal) {
+    return (
+      <div
+        className={cn(
+          "group relative flex-shrink-0 w-36 h-28 rounded-xl transition-all",
+          isActive && "ring-2 ring-primary ring-offset-2 ring-offset-background"
+        )}
+      >
+        <div className="h-full rounded-xl bg-[#1a1a1a] border-2 border-purple-500/30 flex flex-col items-center justify-center overflow-hidden relative">
+          {/* Mode indicator badge */}
+          <div className="absolute top-1 left-1 flex items-center gap-0.5 px-1 py-0.5 rounded text-[8px] font-medium bg-purple-500/20 text-purple-400">
+            <Home className="h-2 w-2" />
+            main
+          </div>
+
+          <div className="animate-spin rounded-full border-2 border-muted border-t-purple-500 h-5 w-5 mb-1" />
+          <span className="text-[8px] text-muted-foreground">Initializing...</span>
+        </div>
+      </div>
+    )
+  }
+
   // Agent is selected - show terminal state
   return (
     <div
@@ -361,7 +345,7 @@ const MainTerminalCard = memo(function MainTerminalCard({
       {/* Mini Terminal Preview with integrated content */}
       <div className={cn(
         "h-full rounded-xl bg-[#1a1a1a] border-2 flex flex-col overflow-hidden relative transition-colors",
-        getActivityBorderClass(activity, mainTerminal?.status),
+        getStatusBorderClass(hasUnseen, mainTerminal?.status),
         isStopped && "opacity-70"
       )}>
         {/* Mode indicator badge - top left */}
@@ -370,9 +354,9 @@ const MainTerminalCard = memo(function MainTerminalCard({
           main
         </div>
 
-        {/* Activity indicator - center */}
+        {/* Status indicator - center */}
         <div className="flex-1 flex items-center justify-center">
-          {getActivityIndicator(activity, isStopped)}
+          {getStatusIndicator(hasUnseen, isStopped)}
         </div>
 
         {/* Name overlay - bottom with gradient */}
@@ -404,7 +388,7 @@ const MainTerminalCard = memo(function MainTerminalCard({
 
 interface TerminalCardProps {
   terminal: TerminalInfo
-  activity: AgentActivity
+  hasUnseen: boolean
   isActive: boolean
   onSelect: () => void
   onClose: (shiftKey: boolean) => void
@@ -413,7 +397,7 @@ interface TerminalCardProps {
 
 const TerminalCard = memo(function TerminalCard({
   terminal,
-  activity,
+  hasUnseen,
   isActive,
   onSelect,
   onClose,
@@ -448,7 +432,7 @@ const TerminalCard = memo(function TerminalCard({
       {/* Mini Terminal Preview with integrated content */}
       <div className={cn(
         "h-full rounded-xl bg-[#1a1a1a] border-2 flex flex-col overflow-hidden relative transition-colors",
-        getActivityBorderClass(activity, terminal.status),
+        getStatusBorderClass(hasUnseen, terminal.status),
         isStopped && "opacity-70"
       )}>
         {/* Mode indicator badge - top left */}
@@ -461,9 +445,9 @@ const TerminalCard = memo(function TerminalCard({
           {modeInfo.label}
         </div>
 
-        {/* Activity indicator - center */}
+        {/* Status indicator - center */}
         <div className="flex-1 flex items-center justify-center">
-          {getActivityIndicator(activity, isStopped)}
+          {getStatusIndicator(hasUnseen, isStopped)}
         </div>
 
         {/* Name overlay - bottom with gradient */}

@@ -1,5 +1,5 @@
 import { Home, FolderOpen, TreeDeciduous, Terminal, type LucideIcon } from "lucide-react"
-import type { AgentActivity, TerminalMode } from "@/lib/types"
+import type { TerminalMode } from "@/lib/types"
 
 export interface ModeInfo {
   icon: LucideIcon
@@ -20,20 +20,5 @@ export function getModeInfo(mode: TerminalMode): ModeInfo {
       return { icon: TreeDeciduous, color: "text-blue-400", bgColor: "bg-blue-500/20", label: "worktree" }
     default:
       return { icon: Terminal, color: "text-muted-foreground", bgColor: "bg-muted", label: mode }
-  }
-}
-
-export function getActivityBorderClass(activity: AgentActivity, status?: string): string {
-  if (status === "stopped") return "border-yellow-500/50"
-  switch (activity) {
-    case "running":
-      return "border-blue-500/50"
-    case "waiting_for_user":
-      return "border-orange-500 animate-pulse"
-    case "done":
-      return "border-green-500/50"
-    case "idle":
-    default:
-      return "border-gray-500/50"
   }
 }

@@ -1,9 +1,18 @@
 import { useEffect } from "react"
 import { listen, type UnlistenFn } from "@tauri-apps/api/event"
-import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query"
-import type { AgentActivity, TerminalInfo } from "./types"
+import { useQuery, type QueryClient } from "@tanstack/react-query"
+import type { TerminalInfo } from "./types"
 import { queryKeys } from "./query-client"
 import { terminalApi } from "./api"
+import { unseenStore } from "@/stores/unseen-store"
+
+// Re-export hooks from unseen store for convenience
+export {
+  useTerminalHasUnseen,
+  useProjectUnseenCount,
+  useMarkTerminalSeen,
+  unseenStore,
+} from "@/stores/unseen-store"
 
 // =============================================================================
 // Event Types from Tauri Backend
@@ -20,67 +29,12 @@ interface TerminalStatusEvent {
   status: "running" | "stopped"
 }
 
-interface TerminalActivityEvent {
-  terminal_id: string
-  activity: AgentActivity
-}
-
 // =============================================================================
 // Query Keys for Event-Driven Data
 // =============================================================================
 
 export const eventQueryKeys = {
   terminalOutput: (terminalId: string) => ["terminals", "output", terminalId] as const,
-  terminalActivity: (terminalId: string) => ["terminals", "activity", terminalId] as const,
-}
-
-// =============================================================================
-// Activity State with Idle Timeout
-// =============================================================================
-
-interface TerminalActivityState {
-  activity: AgentActivity
-  lastActivityAt: number
-  previousActivity: AgentActivity
-}
-
-const IDLE_TIMEOUT = 5000
-
-function computeDisplayActivity(state: TerminalActivityState | undefined): AgentActivity {
-  if (!state) return "idle"
-
-  const timeSinceActivity = Date.now() - state.lastActivityAt
-  if (timeSinceActivity > IDLE_TIMEOUT) {
-    return "idle"
-  }
-
-  return state.activity
-}
-
-// =============================================================================
-// Activity Detection (until backend sends activity events)
-// =============================================================================
-
-const WAITING_PATTERNS = [
-  "[Y/n]", "[y/N]", "(y/n)", "continue?", "Continue?",
-  "permission", "Permission", "Do you want to", "Would you like",
-  "Should I", "Proceed?", "proceed?", "approve", "Approve",
-  "confirm", "Confirm", "Press Enter", "press enter",
-]
-
-const DONE_PATTERNS = [
-  "Task completed", "task completed", "Done!", "Finished!",
-  "Complete!", "Successfully completed",
-]
-
-function detectActivityFromOutput(data: string): AgentActivity {
-  for (const pattern of WAITING_PATTERNS) {
-    if (data.includes(pattern)) return "waiting_for_user"
-  }
-  for (const pattern of DONE_PATTERNS) {
-    if (data.includes(pattern)) return "done"
-  }
-  return "running"
 }
 
 // =============================================================================
@@ -99,16 +53,8 @@ function handleTerminalOutput(
     (oldData = []) => [...oldData, data]
   )
 
-  // Detect and update activity based on output patterns
-  const activity = detectActivityFromOutput(data)
-  queryClient.setQueryData<TerminalActivityState>(
-    eventQueryKeys.terminalActivity(terminal_id),
-    (oldData) => ({
-      activity,
-      lastActivityAt: Date.now(),
-      previousActivity: oldData?.activity ?? "idle",
-    })
-  )
+  // Mark as unseen (store handles active terminal check internally)
+  unseenStore.markUnseen(terminal_id)
 }
 
 function handleTerminalStatus(
@@ -116,6 +62,9 @@ function handleTerminalStatus(
   event: TerminalStatusEvent
 ) {
   const { terminal_id, project_id, status } = event
+
+  // Register terminal -> project mapping
+  unseenStore.registerTerminal(terminal_id, project_id)
 
   // Update the terminal in the terminals list cache
   queryClient.setQueryData<TerminalInfo[]>(
@@ -136,55 +85,21 @@ function handleTerminalStatus(
       return { ...oldData, status }
     }
   )
-
-  // If terminal stopped, update activity to idle
-  if (status === "stopped") {
-    queryClient.setQueryData<TerminalActivityState>(
-      eventQueryKeys.terminalActivity(terminal_id),
-      (oldData) => ({
-        activity: "idle",
-        lastActivityAt: oldData?.lastActivityAt ?? 0,
-        previousActivity: oldData?.activity ?? "idle",
-      })
-    )
-  }
-}
-
-function handleTerminalActivity(
-  queryClient: QueryClient,
-  event: TerminalActivityEvent
-) {
-  const { terminal_id, activity } = event
-
-  queryClient.setQueryData<TerminalActivityState>(
-    eventQueryKeys.terminalActivity(terminal_id),
-    (oldData) => ({
-      activity,
-      lastActivityAt: Date.now(),
-      previousActivity: oldData?.activity ?? "idle",
-    })
-  )
 }
 
 function handleTerminalClosed(
   queryClient: QueryClient,
   terminalId: string
 ) {
-  // Find the project_id from cache
-  const queries = queryClient.getQueriesData<TerminalInfo[]>({
-    queryKey: ["terminals", "list"],
-  })
+  // Get project ID from our store - O(1)
+  const projectId = unseenStore.getProjectId(terminalId)
 
-  for (const [, terminals] of queries) {
-    const terminal = terminals?.find((t) => t.id === terminalId)
-    if (terminal) {
-      handleTerminalStatus(queryClient, {
-        terminal_id: terminalId,
-        project_id: terminal.project_id,
-        status: "stopped",
-      })
-      break
-    }
+  if (projectId) {
+    handleTerminalStatus(queryClient, {
+      terminal_id: terminalId,
+      project_id: projectId,
+      status: "stopped",
+    })
   }
 }
 
@@ -221,13 +136,6 @@ export function useTauriEvents(queryClient: QueryClient) {
       })
     )
 
-    // Terminal activity events (if backend sends them)
-    unlisteners.push(
-      listen<TerminalActivityEvent>("terminal-activity", (event) => {
-        handleTerminalActivity(queryClient, event.payload)
-      })
-    )
-
     // Cleanup on unmount
     return () => {
       unlisteners.forEach((unlisten) => {
@@ -258,64 +166,6 @@ export function useTerminalOutput(terminalId: string): string[] {
   return data
 }
 
-/**
- * Subscribe to terminal activity for a specific terminal.
- * Automatically computes idle state based on timeout.
- */
-export function useTerminalActivity(
-  terminalId: string,
-  terminalStatus?: string
-): AgentActivity {
-  const { data } = useQuery({
-    queryKey: eventQueryKeys.terminalActivity(terminalId),
-    queryFn: (): TerminalActivityState => ({
-      activity: "idle",
-      lastActivityAt: 0,
-      previousActivity: "idle",
-    }),
-    staleTime: Infinity,
-    gcTime: 1000 * 60 * 30,
-    enabled: !!terminalId,
-  })
-
-  if (terminalStatus === "stopped") {
-    return "idle"
-  }
-
-  return computeDisplayActivity(data)
-}
-
-/**
- * Hook for components that need to trigger idle timeout refresh.
- * Returns the raw activity state and a computed display activity.
- */
-export function useTerminalActivityWithRefresh(
-  terminalId: string,
-  terminalStatus?: string
-): { activity: AgentActivity; lastActivityAt: number } {
-  const { data } = useQuery({
-    queryKey: eventQueryKeys.terminalActivity(terminalId),
-    queryFn: (): TerminalActivityState => ({
-      activity: "idle",
-      lastActivityAt: 0,
-      previousActivity: "idle",
-    }),
-    staleTime: Infinity,
-    gcTime: 1000 * 60 * 30,
-    enabled: !!terminalId,
-    refetchOnWindowFocus: false,
-  })
-
-  const activity = terminalStatus === "stopped"
-    ? "idle"
-    : computeDisplayActivity(data)
-
-  return {
-    activity,
-    lastActivityAt: data?.lastActivityAt ?? 0,
-  }
-}
-
 // =============================================================================
 // Utility Functions for Direct Cache Access
 // =============================================================================
@@ -328,25 +178,11 @@ export function clearTerminalOutput(queryClient: QueryClient, terminalId: string
 }
 
 /**
- * Reset terminal activity to idle
- */
-export function resetTerminalActivity(queryClient: QueryClient, terminalId: string) {
-  queryClient.setQueryData<TerminalActivityState>(
-    eventQueryKeys.terminalActivity(terminalId),
-    {
-      activity: "idle",
-      lastActivityAt: 0,
-      previousActivity: "idle",
-    }
-  )
-}
-
-/**
  * Remove terminal data from cache when terminal is closed
  */
 export function removeTerminalFromCache(queryClient: QueryClient, terminalId: string) {
   queryClient.removeQueries({ queryKey: eventQueryKeys.terminalOutput(terminalId) })
-  queryClient.removeQueries({ queryKey: eventQueryKeys.terminalActivity(terminalId) })
+  unseenStore.unregisterTerminal(terminalId)
 }
 
 /**
@@ -358,4 +194,14 @@ export function loadTerminalHistory(
   history: string[]
 ) {
   queryClient.setQueryData(eventQueryKeys.terminalOutput(terminalId), history)
+}
+
+/**
+ * Mark a terminal as seen (for imperative use)
+ */
+export function markTerminalSeen(
+  _queryClient: QueryClient,
+  terminalId: string
+) {
+  unseenStore.setActiveTerminal(terminalId)
 }

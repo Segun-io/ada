@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, Suspense } from "react"
+import { useState, useCallback, useRef, Suspense, useEffect } from "react"
 import { useNavigate, useParams } from "@tanstack/react-router"
 import { Plus, FolderOpen, FolderPlus, GitBranch, Bot, ChevronLeft, ChevronRight } from "lucide-react"
 import { open as openDialog } from "@tauri-apps/plugin-dialog"
@@ -37,6 +37,8 @@ import {
   useUpdateProjectSettings,
 } from "@/lib/queries"
 import { useSidebarCollapsed, useTerminalUIStore } from "@/stores/terminal-ui-store"
+import { useProjectUnseenCount } from "@/lib/tauri-events"
+import { AttentionBadge } from "@/components/attention-badge"
 import type { ProjectSummary } from "@/lib/types"
 
 export function ProjectSidebar() {
@@ -173,12 +175,18 @@ interface ProjectItemProps {
 }
 
 function ProjectItem({ project, isSelected, isCollapsed, onSelect, onHover }: ProjectItemProps) {
+  // Fetch terminals - registration happens automatically in queryFn
+  useQuery(terminalsQueryOptions(project.id))
+
+  // Get unseen count - O(1) lookup from store
+  const unseenCount = useProjectUnseenCount(project.id)
+
   if (isCollapsed) {
     return (
       <button
         onClick={onSelect}
         onMouseEnter={onHover}
-        className={`w-full flex items-center justify-center py-2 text-sm transition-colors border-b border-border/50 hover:bg-accent/50 cursor-pointer ${
+        className={`w-full flex items-center justify-center py-2 text-sm transition-colors border-b border-border/50 hover:bg-accent/50 cursor-pointer relative ${
           isSelected ? "bg-accent" : ""
         }`}
         title={project.name}
@@ -186,6 +194,9 @@ function ProjectItem({ project, isSelected, isCollapsed, onSelect, onHover }: Pr
         <span className="w-6 h-6 rounded bg-muted flex items-center justify-center text-xs font-medium">
           {project.name.charAt(0).toUpperCase()}
         </span>
+        {unseenCount > 0 && (
+          <AttentionBadge count={unseenCount} className="absolute -top-0.5 -right-0.5" />
+        )}
       </button>
     )
   }
@@ -194,11 +205,12 @@ function ProjectItem({ project, isSelected, isCollapsed, onSelect, onHover }: Pr
     <button
       onClick={onSelect}
       onMouseEnter={onHover}
-      className={`w-full text-left px-4 py-2 text-sm transition-colors border-b border-border/50 hover:bg-accent/50 truncate cursor-pointer ${
+      className={`w-full text-left px-4 py-2 text-sm transition-colors border-b border-border/50 hover:bg-accent/50 cursor-pointer flex items-center justify-between ${
         isSelected ? "bg-accent" : ""
       }`}
     >
-      {project.name}
+      <span className="truncate">{project.name}</span>
+      {unseenCount > 0 && <AttentionBadge count={unseenCount} />}
     </button>
   )
 }
@@ -279,6 +291,8 @@ function CreateProjectDialog({ open, onOpenChange, onCreated }: CreateProjectDia
   })
 
   // Validate that the folder is empty or doesn't exist
+  const wasOpenRef = useRef(false)
+
   const validateNewPath = useCallback(async (path: string) => {
     if (!path) {
       setPathWarning(null)
@@ -303,9 +317,9 @@ function CreateProjectDialog({ open, onOpenChange, onCreated }: CreateProjectDia
     }
   }, [])
 
-  // Reset form and mutations when dialog opens
+  // Reset form and mutations when dialog transitions from closed to open
   useEffect(() => {
-    if (open) {
+    if (open && !wasOpenRef.current) {
       form.reset(getDefaultValues())
       setPathWarning(null)
       setIsValidatingPath(false)
@@ -313,8 +327,8 @@ function CreateProjectDialog({ open, onOpenChange, onCreated }: CreateProjectDia
       createProjectMutation.reset()
       openProjectMutation.reset()
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- only reset when dialog opens
-  }, [open])
+    wasOpenRef.current = open
+  }, [open, form, getDefaultValues, createProjectMutation, openProjectMutation])
 
   // Validate new path with debounce
   useEffect(() => {

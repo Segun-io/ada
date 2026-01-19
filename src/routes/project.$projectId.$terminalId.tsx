@@ -1,5 +1,5 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import {
   Plus,
   Terminal as TerminalIcon,
@@ -34,7 +34,10 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   clearTerminalOutput,
   removeTerminalFromCache,
+  useProjectUnseenCount,
+  useMarkTerminalSeen,
 } from "@/lib/tauri-events";
+import { AttentionBadge } from "@/components/attention-badge";
 import { setLastTerminal } from "@/lib/terminal-history";
 import {
   projectQueryOptions,
@@ -44,7 +47,6 @@ import {
   currentBranchQueryOptions,
   worktreesQueryOptions,
   useCreateTerminal,
-  useCreateMainTerminal,
   useCloseTerminal,
   useRestartTerminal,
   useSwitchTerminalAgent,
@@ -122,7 +124,6 @@ function TerminalPage() {
   });
 
   // Mutations
-  const createMainTerminalMutation = useCreateMainTerminal();
   const closeTerminalMutation = useCloseTerminal();
   const restartTerminalMutation = useRestartTerminal();
   const switchTerminalAgentMutation = useSwitchTerminalAgent();
@@ -131,12 +132,26 @@ function TerminalPage() {
   const [isCreateTerminalOpen, setIsCreateTerminalOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const mainTerminalCreatingRef = useRef(false);
 
   // Find terminals
   const mainTerminal = terminals.find((t) => t.is_main) || null;
   const activeTerminal =
     terminals.find((t) => t.id === terminalId) || mainTerminal;
+
+  // Track unseen count for this project - O(1) lookup from store
+  // (terminals are auto-registered when fetched via terminalsQueryOptions)
+  const unseenCount = useProjectUnseenCount(projectId);
+
+  // Mark terminal as seen when viewed
+  const markSeen = useMarkTerminalSeen();
+  const activeTerminalId = activeTerminal?.id;
+
+  // Mark the active terminal as seen when it changes
+  useEffect(() => {
+    if (activeTerminalId) {
+      markSeen(activeTerminalId);
+    }
+  }, [activeTerminalId, markSeen]);
 
   // Navigate to a terminal
   const selectTerminal = useCallback(
@@ -149,41 +164,7 @@ function TerminalPage() {
     [navigate, projectId],
   );
 
-  // Auto-create main terminal when default_client is set
-  useEffect(() => {
-    if (
-      currentProject.settings.default_client &&
-      !mainTerminal &&
-      !mainTerminalCreatingRef.current &&
-      clients.length > 0 &&
-      !createMainTerminalMutation.isPending
-    ) {
-      const defaultClient = clients.find(
-        (c) => c.id === currentProject.settings.default_client && c.installed,
-      );
-      if (defaultClient) {
-        mainTerminalCreatingRef.current = true;
-        createMainTerminalMutation.mutate(
-          { projectId, clientId: defaultClient.id },
-          {
-            onSettled: () => {
-              mainTerminalCreatingRef.current = false;
-            },
-            onError: (err) => {
-              console.error("Failed to create main terminal:", err);
-            },
-          },
-        );
-      }
-    }
-  }, [
-    currentProject.settings.default_client,
-    mainTerminal,
-    clients,
-    projectId,
-    createMainTerminalMutation,
-  ]);
-
+  // Main terminal is now auto-created by backend when default_client is set
   const handleSelectDefaultClient = (clientId: string) => {
     updateProjectSettingsMutation.mutate({
       project_id: projectId,
@@ -260,6 +241,7 @@ function TerminalPage() {
       <header className="flex items-center justify-between border-b border-border px-4 py-2">
         <div className="flex items-center gap-2">
           <span className="font-semibold text-sm">{currentProject.name}</span>
+          {unseenCount > 0 && <AttentionBadge count={unseenCount} size="md" />}
           <Button
             variant="ghost"
             size="icon"
@@ -433,6 +415,8 @@ function CreateTerminalDialog({
     [defaultClientId],
   );
 
+  const wasOpenRef = useRef(false);
+
   const form = useForm({
     defaultValues: getDefaultValues(),
     onSubmit: async ({ value }) => {
@@ -460,13 +444,14 @@ function CreateTerminalDialog({
     },
   });
 
+  // Reset form when dialog transitions from closed to open
   useEffect(() => {
-    if (open) {
+    if (open && !wasOpenRef.current) {
       form.reset(getDefaultValues());
       createTerminalMutation.reset();
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+    wasOpenRef.current = open;
+  }, [open, form, getDefaultValues, createTerminalMutation]);
 
   const installedClients = clients.filter((c) => c.installed);
 

@@ -19,13 +19,19 @@ import {
 } from "@/components/ui/select"
 import { ConfirmationDialog } from "@/components/confirmation-dialog"
 import { cn } from "@/lib/utils"
-import { getModeInfo, getActivityBorderClass } from "@/lib/terminal-utils"
-import type { TerminalInfo, ClientSummary, AgentActivity } from "@/lib/types"
+import { getModeInfo } from "@/lib/terminal-utils"
+import type { TerminalInfo, ClientSummary, TerminalStatus } from "@/lib/types"
+
+// Get border class for terminal view based on status
+const getTerminalBorderClass = (status?: TerminalStatus): string => {
+  if (status === "stopped") return "border-yellow-500/50"
+  if (status === "running") return "border-green-500/50"
+  return "border-gray-600/50"
+}
 
 interface TerminalViewProps {
   terminalId: string
   terminal?: TerminalInfo
-  activity?: AgentActivity
   currentBranch?: string
   clients?: ClientSummary[]
   onRestart?: () => void
@@ -36,7 +42,6 @@ interface TerminalViewProps {
 export function TerminalView({
   terminalId,
   terminal,
-  activity = "idle",
   currentBranch = "",
   clients = [],
   onRestart,
@@ -283,7 +288,7 @@ export function TerminalView({
   return (
     <div className={cn(
       "terminal-container h-full w-full rounded-xl overflow-hidden flex flex-col border-2 transition-all duration-300",
-      getActivityBorderClass(activity, terminal?.status)
+      getTerminalBorderClass(terminal?.status)
     )}>
       {/* Terminal Header */}
       <div className="flex items-center justify-between px-3 py-1.5 bg-[#252525] border-b border-border/50">

@@ -138,20 +138,20 @@ pub async fn create_terminal(
     Ok(terminal_info)
 }
 
-/// Create the main terminal for a project
-#[tauri::command]
-pub async fn create_main_terminal(
-    state: State<'_, AppState>,
-    project_id: String,
-    client_id: String,
+/// Internal function to create the main terminal for a project
+/// Can be called from other modules (e.g., project settings update)
+pub fn create_main_terminal_internal(
+    state: &AppState,
+    project_id: &str,
+    client_id: &str,
 ) -> Result<TerminalInfo> {
     // Get project
     let project = {
         let projects = state.projects.read();
         projects
-            .get(&project_id)
+            .get(project_id)
             .cloned()
-            .ok_or_else(|| Error::ProjectNotFound(project_id.clone()))?
+            .ok_or_else(|| Error::ProjectNotFound(project_id.to_string()))?
     };
 
     // Check if main terminal already exists
@@ -166,10 +166,18 @@ pub async fn create_main_terminal(
     let client = {
         let clients = state.clients.read();
         clients
-            .get(&client_id)
+            .get(client_id)
             .cloned()
-            .ok_or_else(|| Error::ClientNotFound(client_id.clone()))?
+            .ok_or_else(|| Error::ClientNotFound(client_id.to_string()))?
     };
+
+    // Verify client is installed
+    if !client.installed {
+        return Err(Error::InvalidRequest(format!(
+            "Client '{}' is not installed",
+            client.name
+        )));
+    }
 
     let terminal_id = uuid::Uuid::new_v4().to_string();
 
@@ -189,9 +197,9 @@ pub async fn create_main_terminal(
 
     let terminal = Terminal {
         id: terminal_id.clone(),
-        project_id: project_id.clone(),
+        project_id: project_id.to_string(),
         name: "main".to_string(),
-        client_id,
+        client_id: client_id.to_string(),
         working_dir: project.path.clone(),
         branch: None,
         worktree_path: None,
@@ -212,7 +220,7 @@ pub async fn create_main_terminal(
     // Update project with main terminal ID
     {
         let mut projects = state.projects.write();
-        if let Some(project) = projects.get_mut(&project_id) {
+        if let Some(project) = projects.get_mut(project_id) {
             project.add_terminal(terminal_id.clone());
             project.main_terminal_id = Some(terminal_id.clone());
             let _ = state.save_project(project);
@@ -223,6 +231,16 @@ pub async fn create_main_terminal(
     let _ = state.save_terminal(&terminal_id);
 
     Ok(terminal_info)
+}
+
+/// Create the main terminal for a project (Tauri command wrapper)
+#[tauri::command]
+pub async fn create_main_terminal(
+    state: State<'_, AppState>,
+    project_id: String,
+    client_id: String,
+) -> Result<TerminalInfo> {
+    create_main_terminal_internal(&state, &project_id, &client_id)
 }
 
 #[tauri::command]

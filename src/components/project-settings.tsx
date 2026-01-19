@@ -1,4 +1,4 @@
-import { useEffect, useCallback, useState } from "react"
+import { useCallback, useState, useRef, useEffect } from "react"
 import { useForm } from "@tanstack/react-form"
 import { Trash2 } from "lucide-react"
 
@@ -48,6 +48,8 @@ export function ProjectSettings({
   const deleteProjectMutation = useDeleteProject()
   const [deleteConfirmation, setDeleteConfirmation] = useState(false)
 
+  const wasOpenRef = useRef(false)
+
   const getDefaultValues = useCallback((): ProjectSettingsFormValues => ({
     defaultClient: project.settings.default_client || "",
   }), [project.settings.default_client])
@@ -66,15 +68,15 @@ export function ProjectSettings({
     },
   })
 
-  // Reset form and mutation state when dialog opens
+  // Reset form when dialog transitions from closed to open
   useEffect(() => {
-    if (open) {
+    if (open && !wasOpenRef.current) {
       form.reset(getDefaultValues())
       updateSettingsMutation.reset()
       deleteProjectMutation.reset()
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- only reset when dialog opens
-  }, [open])
+    wasOpenRef.current = open
+  }, [open, form, getDefaultValues, updateSettingsMutation, deleteProjectMutation])
 
   // Wrap onOpenChange to reset delete confirmation when closing
   const handleOpenChange = (isOpen: boolean) => {

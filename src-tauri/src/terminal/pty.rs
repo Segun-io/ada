@@ -56,7 +56,7 @@ pub fn spawn_pty(
     // Spawn a thread to read output and emit events
     let app_handle_clone = app_handle.clone();
     let terminal_id_clone = terminal_id.to_string();
-    
+
     // Get the writer before spawning the read thread
     let writer = pair
         .master
@@ -75,6 +75,7 @@ pub fn spawn_pty(
                     // Store in output buffer for persistence
                     output_buffer.append(output.clone());
 
+                    // Emit output event for frontend
                     let _ = app_handle_clone.emit(
                         "terminal-output",
                         TerminalOutput {

@@ -96,15 +96,6 @@ pub enum TerminalStatus {
     Error,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum AgentActivity {
-    #[default]
-    Idle,
-    Active,
-    Thinking,
-}
-
 /// Handle to a running PTY - stored separately from Terminal for thread safety
 pub struct PtyHandle {
     pub master: Arc<Mutex<Box<dyn MasterPty + Send>>>,

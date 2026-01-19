@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 use crate::state::AppState;
+use crate::terminal::create_main_terminal_internal;
 use super::{AdaProject, CreateProjectRequest, ProjectSummary, ProjectSettings};
 
 /// Check if a git repository has at least one commit
@@ -358,27 +359,71 @@ pub async fn update_project_settings(
     state: State<'_, AppState>,
     request: UpdateProjectSettingsRequest,
 ) -> Result<AdaProject> {
-    let mut projects = state.projects.write();
-    let project = projects
-        .get_mut(&request.project_id)
-        .ok_or_else(|| Error::ProjectNotFound(request.project_id.clone()))?;
+    // Check if we need to create main terminal before acquiring project lock
+    let should_create_main = request.default_client.is_some();
+    let client_id = request.default_client.clone();
 
-    // Update settings, preserving last_visited_terminal_id if not provided
-    let last_visited = request.last_visited_terminal_id.or_else(|| project.settings.last_visited_terminal_id.clone());
+    let updated_project = {
+        let mut projects = state.projects.write();
+        let project = projects
+            .get_mut(&request.project_id)
+            .ok_or_else(|| Error::ProjectNotFound(request.project_id.clone()))?;
 
-    project.settings = ProjectSettings {
-        default_client: request.default_client,
-        auto_create_worktree: request.auto_create_worktree,
-        worktree_base_path: request.worktree_base_path.map(PathBuf::from),
-        last_visited_terminal_id: last_visited,
+        // Update settings, preserving last_visited_terminal_id if not provided
+        let last_visited = request.last_visited_terminal_id.or_else(|| project.settings.last_visited_terminal_id.clone());
+
+        project.settings = ProjectSettings {
+            default_client: request.default_client,
+            auto_create_worktree: request.auto_create_worktree,
+            worktree_base_path: request.worktree_base_path.map(PathBuf::from),
+            last_visited_terminal_id: last_visited,
+        };
+        project.updated_at = chrono::Utc::now();
+
+        project.clone()
     };
-    project.updated_at = chrono::Utc::now();
-
-    let updated_project = project.clone();
 
     // Save to disk
-    drop(projects); // Release lock before saving
     state.save_project(&updated_project)?;
 
-    Ok(updated_project)
+    // Auto-create main terminal if default_client is set and no main terminal exists
+    if should_create_main {
+        if let Some(client_id) = client_id {
+            // Check if main terminal already exists
+            let needs_main_terminal = {
+                match &updated_project.main_terminal_id {
+                    None => true,
+                    Some(main_id) => {
+                        let terminals = state.terminals.read();
+                        !terminals.contains_key(main_id)
+                    }
+                }
+            };
+
+            if needs_main_terminal {
+                // Try to create main terminal, but don't fail if it errors
+                // (e.g., client not installed)
+                match create_main_terminal_internal(&state, &request.project_id, &client_id) {
+                    Ok(_terminal_info) => {
+                        eprintln!("[Ada] Auto-created main terminal for project {}", request.project_id);
+                    }
+                    Err(e) => {
+                        eprintln!("[Ada] Failed to auto-create main terminal: {}", e);
+                        // Don't propagate error - settings were still updated successfully
+                    }
+                }
+            }
+        }
+    }
+
+    // Re-read project to get updated main_terminal_id if it was created
+    let final_project = {
+        let projects = state.projects.read();
+        projects
+            .get(&request.project_id)
+            .cloned()
+            .unwrap_or(updated_project)
+    };
+
+    Ok(final_project)
 }

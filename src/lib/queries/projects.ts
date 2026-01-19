@@ -63,6 +63,10 @@ export function useUpdateProjectSettings() {
         updatedProject
       )
       queryClient.invalidateQueries({ queryKey: queryKeys.projects.list() })
+      // Also invalidate terminals - setting default_client can auto-create main terminal
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.terminals.list(updatedProject.id),
+      })
     },
   })
 }
