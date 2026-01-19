@@ -1,6 +1,16 @@
 # Ada
 
+![Ada](screenshots/ada.png)
+
 Ada is a desktop application for managing multiple AI coding agents with integrated terminal support and git worktree workflows.
+
+## Screenshots
+
+![Add Project](screenshots/add-project.png)
+*Create new projects or open existing folders with git initialization*
+
+![Create Terminal](screenshots/create-terminal.png)
+*Spawn AI agent terminals with worktree support for branch isolation*
 
 ## Features
 
