@@ -184,7 +184,8 @@ impl AppState {
         ];
         
         let mut clients = self.clients.write();
-        for client in default_clients {
+        for mut client in default_clients {
+            client.detect_installation();
             clients.insert(client.id.clone(), client);
         }
     }

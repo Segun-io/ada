@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -24,7 +25,39 @@ pub struct ClientConfig {
 
 impl ClientConfig {
     pub fn detect_installation(&mut self) {
-        self.installed = which::which(&self.command).is_ok();
+        // First try which (uses PATH)
+        if which::which(&self.command).is_ok() {
+            self.installed = true;
+            return;
+        }
+
+        // Fallback: check common installation paths (macOS GUI apps don't inherit shell PATH)
+        let common_paths = self.get_common_paths();
+        self.installed = common_paths.iter().any(|p| p.exists());
+    }
+
+    fn get_common_paths(&self) -> Vec<PathBuf> {
+        let home = dirs::home_dir().unwrap_or_default();
+
+        match self.client_type {
+            ClientType::ClaudeCode => vec![
+                home.join(".local/bin/claude"),
+                home.join(".claude/local/claude"),
+                PathBuf::from("/usr/local/bin/claude"),
+                PathBuf::from("/opt/homebrew/bin/claude"),
+            ],
+            ClientType::OpenCode => vec![
+                home.join(".local/bin/opencode"),
+                PathBuf::from("/usr/local/bin/opencode"),
+                PathBuf::from("/opt/homebrew/bin/opencode"),
+            ],
+            ClientType::Codex => vec![
+                home.join(".local/bin/codex"),
+                PathBuf::from("/usr/local/bin/codex"),
+                PathBuf::from("/opt/homebrew/bin/codex"),
+            ],
+            ClientType::Custom => vec![],
+        }
     }
 }
 
