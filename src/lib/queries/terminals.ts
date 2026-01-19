@@ -65,7 +65,39 @@ export function useCloseTerminal() {
   return useMutation({
     mutationFn: ({ terminalId, projectId }: { terminalId: string; projectId: string }) =>
       terminalApi.close(terminalId).then(() => ({ terminalId, projectId })),
-    onSuccess: (_, { projectId }) => {
+    onMutate: async ({ terminalId, projectId }) => {
+      // Cancel any outgoing refetches
+      await queryClient.cancelQueries({
+        queryKey: queryKeys.terminals.list(projectId),
+      })
+
+      // Snapshot the previous value
+      const previousTerminals = queryClient.getQueryData(
+        queryKeys.terminals.list(projectId)
+      )
+
+      // Optimistically remove the terminal from the list
+      queryClient.setQueryData(
+        queryKeys.terminals.list(projectId),
+        (old: unknown) => {
+          if (!Array.isArray(old)) return old
+          return old.filter((t: { id: string }) => t.id !== terminalId)
+        }
+      )
+
+      return { previousTerminals }
+    },
+    onError: (_err, { projectId }, context) => {
+      // Rollback on error
+      if (context?.previousTerminals) {
+        queryClient.setQueryData(
+          queryKeys.terminals.list(projectId),
+          context.previousTerminals
+        )
+      }
+    },
+    onSettled: (_, __, { projectId }) => {
+      // Always refetch to ensure cache is in sync
       queryClient.invalidateQueries({
         queryKey: queryKeys.terminals.list(projectId),
       })
@@ -82,6 +114,17 @@ export function useRestartTerminal() {
   return useMutation({
     mutationFn: (terminalId: string) => terminalApi.restart(terminalId),
     onSuccess: (updatedTerminal) => {
+      // Clear terminal output cache for fresh start
+      queryClient.setQueryData(
+        ["terminals", "output", updatedTerminal.id],
+        []
+      )
+      // Reset activity state
+      queryClient.setQueryData(
+        ["terminals", "activity", updatedTerminal.id],
+        { activity: "idle", lastActivityAt: 0, previousActivity: "idle" }
+      )
+      // Update terminal detail
       queryClient.setQueryData(
         queryKeys.terminals.detail(updatedTerminal.id),
         updatedTerminal

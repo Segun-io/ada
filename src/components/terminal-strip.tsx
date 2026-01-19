@@ -1,5 +1,5 @@
-import { useState } from "react"
-import { Plus, X, RotateCcw, Loader2, Home, FolderOpen, GitBranch, TreeDeciduous, Bot, Terminal } from "lucide-react"
+import { useState, useCallback, memo, useEffect } from "react"
+import { Plus, X, RotateCcw, Loader2, Home, Bot } from "lucide-react"
 import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area"
 import { Button } from "@/components/ui/button"
 import {
@@ -11,34 +11,20 @@ import {
 } from "@/components/ui/select"
 import { ConfirmationDialog } from "@/components/confirmation-dialog"
 import { cn } from "@/lib/utils"
-import type { TerminalInfo, ClientSummary, AgentActivity, TerminalMode } from "@/lib/types"
+import { getModeInfo, getActivityBorderClass } from "@/lib/terminal-utils"
+import { useTerminalActivityWithRefresh } from "@/lib/tauri-events"
+import type { TerminalInfo, ClientSummary, AgentActivity } from "@/lib/types"
 
-// Get border color based on activity (matching terminal-view.tsx)
-const getActivityBorderClass = (activity: AgentActivity, status?: string) => {
-  if (status === "stopped") return "border-yellow-500/50"
-  switch (activity) {
-    case "running":
-      return "border-blue-500/50"
-    case "waiting_for_user":
-      return "border-orange-500 animate-pulse"
-    case "done":
-      return "border-green-500/50"
-    case "idle":
-    default:
-      return "border-gray-500/50"
-  }
-}
+// Idle timeout for refresh scheduling
+const IDLE_TIMEOUT = 5000
 
 interface TerminalStripProps {
   terminals: TerminalInfo[]
   clients: ClientSummary[]
-  activeTerminalId: string | null
   mainTerminal: TerminalInfo | null
+  activeTerminalId: string | null
   defaultClientId: string | null
-  isMainTerminalActive: boolean
-  getActivity: (terminalId: string) => AgentActivity
   onSelectTerminal: (terminalId: string) => void
-  onSelectMainTerminal: () => void
   onCloseTerminal: (terminalId: string) => void
   onRestartTerminal: (terminalId: string) => void
   onNewTerminal: () => void
@@ -72,13 +58,10 @@ const getActivityIndicator = (activity: AgentActivity, isStopped: boolean) => {
 export function TerminalStrip({
   terminals,
   clients,
-  activeTerminalId,
   mainTerminal,
+  activeTerminalId,
   defaultClientId,
-  isMainTerminalActive,
-  getActivity,
   onSelectTerminal,
-  onSelectMainTerminal,
   onCloseTerminal,
   onRestartTerminal,
   onNewTerminal,
@@ -91,11 +74,10 @@ export function TerminalStrip({
   })
 
   const installedClients = clients.filter((c) => c.installed)
-
-  // Filter out main terminal from regular terminals list
   const otherTerminals = terminals.filter((t) => !t.is_main)
+  const isMainTerminalActive = mainTerminal ? activeTerminalId === mainTerminal.id : false
 
-  const handleCloseClick = (terminal: TerminalInfo, shiftKey: boolean) => {
+  const handleCloseClick = useCallback((terminal: TerminalInfo, shiftKey: boolean) => {
     if (shiftKey) {
       onCloseTerminal(terminal.id)
     } else {
@@ -105,43 +87,41 @@ export function TerminalStrip({
         terminalName: terminal.name,
       })
     }
-  }
+  }, [onCloseTerminal])
 
-  const confirmClose = () => {
+  const confirmClose = useCallback(() => {
     onCloseTerminal(closeConfirmation.terminalId)
     setCloseConfirmation({ open: false, terminalId: "", terminalName: "" })
-  }
+  }, [closeConfirmation.terminalId, onCloseTerminal])
 
-  const cancelClose = () => {
+  const cancelClose = useCallback(() => {
     setCloseConfirmation({ open: false, terminalId: "", terminalName: "" })
-  }
+  }, [])
 
   return (
     <div className="h-36 border-t border-border bg-background flex-shrink-0">
       <ScrollArea className="h-full">
         <div className="flex gap-3 p-3 h-full">
           {/* Static Main Terminal Card - Always First */}
-          <MainTerminalCard
+          <MainTerminalCardWrapper
             mainTerminal={mainTerminal}
             defaultClientId={defaultClientId}
             installedClients={installedClients}
-            activity={mainTerminal ? getActivity(mainTerminal.id) : "idle"}
             isActive={isMainTerminalActive}
-            onSelect={onSelectMainTerminal}
-            onRestart={mainTerminal ? () => onRestartTerminal(mainTerminal.id) : undefined}
+            onSelect={onSelectTerminal}
+            onRestart={onRestartTerminal}
             onSelectClient={onSelectDefaultClient}
           />
 
           {/* Other Terminals */}
           {otherTerminals.map((terminal) => (
-            <TerminalCard
+            <TerminalCardWrapper
               key={terminal.id}
               terminal={terminal}
-              activity={getActivity(terminal.id)}
               isActive={terminal.id === activeTerminalId}
-              onSelect={() => onSelectTerminal(terminal.id)}
-              onClose={(shiftKey) => handleCloseClick(terminal, shiftKey)}
-              onRestart={() => onRestartTerminal(terminal.id)}
+              onSelect={onSelectTerminal}
+              onClose={handleCloseClick}
+              onRestart={onRestartTerminal}
             />
           ))}
 
@@ -171,6 +151,140 @@ export function TerminalStrip({
   )
 }
 
+// =============================================================================
+// Wrapper Components with Activity Tracking
+// =============================================================================
+
+interface MainTerminalCardWrapperProps {
+  mainTerminal: TerminalInfo | null
+  defaultClientId: string | null
+  installedClients: ClientSummary[]
+  isActive: boolean
+  onSelect: (terminalId: string) => void
+  onRestart: (terminalId: string) => void
+  onSelectClient: (clientId: string) => void
+}
+
+function MainTerminalCardWrapper({
+  mainTerminal,
+  defaultClientId,
+  installedClients,
+  isActive,
+  onSelect,
+  onRestart,
+  onSelectClient,
+}: MainTerminalCardWrapperProps) {
+  // Use TanStack Query for activity (populated by Tauri events)
+  const { activity, lastActivityAt } = useTerminalActivityWithRefresh(
+    mainTerminal?.id ?? "",
+    mainTerminal?.status
+  )
+
+  // Schedule re-render after idle timeout to update display
+  const [, forceUpdate] = useState(0)
+  useEffect(() => {
+    if (lastActivityAt === 0 || activity === "idle") return
+
+    const timeSinceActivity = Date.now() - lastActivityAt
+    if (timeSinceActivity < IDLE_TIMEOUT) {
+      const timeout = setTimeout(
+        () => forceUpdate((n) => n + 1),
+        IDLE_TIMEOUT - timeSinceActivity + 100
+      )
+      return () => clearTimeout(timeout)
+    }
+  }, [lastActivityAt, activity])
+
+  const handleSelect = useCallback(() => {
+    if (mainTerminal) {
+      onSelect(mainTerminal.id)
+    }
+  }, [mainTerminal, onSelect])
+
+  const handleRestart = useCallback(() => {
+    if (mainTerminal) {
+      onRestart(mainTerminal.id)
+    }
+  }, [mainTerminal, onRestart])
+
+  return (
+    <MainTerminalCard
+      mainTerminal={mainTerminal}
+      defaultClientId={defaultClientId}
+      installedClients={installedClients}
+      activity={activity}
+      isActive={isActive}
+      onSelect={handleSelect}
+      onRestart={mainTerminal ? handleRestart : undefined}
+      onSelectClient={onSelectClient}
+    />
+  )
+}
+
+interface TerminalCardWrapperProps {
+  terminal: TerminalInfo
+  isActive: boolean
+  onSelect: (terminalId: string) => void
+  onClose: (terminal: TerminalInfo, shiftKey: boolean) => void
+  onRestart: (terminalId: string) => void
+}
+
+function TerminalCardWrapper({
+  terminal,
+  isActive,
+  onSelect,
+  onClose,
+  onRestart,
+}: TerminalCardWrapperProps) {
+  // Use TanStack Query for activity (populated by Tauri events)
+  const { activity, lastActivityAt } = useTerminalActivityWithRefresh(
+    terminal.id,
+    terminal.status
+  )
+
+  // Schedule re-render after idle timeout to update display
+  const [, forceUpdate] = useState(0)
+  useEffect(() => {
+    if (lastActivityAt === 0 || activity === "idle") return
+
+    const timeSinceActivity = Date.now() - lastActivityAt
+    if (timeSinceActivity < IDLE_TIMEOUT) {
+      const timeout = setTimeout(
+        () => forceUpdate((n) => n + 1),
+        IDLE_TIMEOUT - timeSinceActivity + 100
+      )
+      return () => clearTimeout(timeout)
+    }
+  }, [lastActivityAt, activity])
+
+  const handleSelect = useCallback(() => {
+    onSelect(terminal.id)
+  }, [terminal.id, onSelect])
+
+  const handleClose = useCallback((shiftKey: boolean) => {
+    onClose(terminal, shiftKey)
+  }, [terminal, onClose])
+
+  const handleRestart = useCallback(() => {
+    onRestart(terminal.id)
+  }, [terminal.id, onRestart])
+
+  return (
+    <TerminalCard
+      terminal={terminal}
+      activity={activity}
+      isActive={isActive}
+      onSelect={handleSelect}
+      onClose={handleClose}
+      onRestart={handleRestart}
+    />
+  )
+}
+
+// =============================================================================
+// Memoized Card Components
+// =============================================================================
+
 interface MainTerminalCardProps {
   mainTerminal: TerminalInfo | null
   defaultClientId: string | null
@@ -182,7 +296,7 @@ interface MainTerminalCardProps {
   onSelectClient: (clientId: string) => void
 }
 
-function MainTerminalCard({
+const MainTerminalCard = memo(function MainTerminalCard({
   mainTerminal,
   defaultClientId,
   installedClients,
@@ -286,7 +400,7 @@ function MainTerminalCard({
       </div>
     </div>
   )
-}
+})
 
 interface TerminalCardProps {
   terminal: TerminalInfo
@@ -297,23 +411,7 @@ interface TerminalCardProps {
   onRestart: () => void
 }
 
-// Get mode display info
-const getModeInfo = (mode: TerminalMode) => {
-  switch (mode) {
-    case "main":
-      return { icon: Home, color: "text-purple-400", bgColor: "bg-purple-500/20", label: "main" }
-    case "folder":
-      return { icon: FolderOpen, color: "text-orange-400", bgColor: "bg-orange-500/20", label: "folder" }
-    case "current_branch":
-      return { icon: Terminal, color: "text-green-400", bgColor: "bg-green-500/20", label: "main" }
-    case "worktree":
-      return { icon: TreeDeciduous, color: "text-blue-400", bgColor: "bg-blue-500/20", label: "worktree" }
-    default:
-      return { icon: GitBranch, color: "text-muted-foreground", bgColor: "bg-muted", label: mode }
-  }
-}
-
-function TerminalCard({
+const TerminalCard = memo(function TerminalCard({
   terminal,
   activity,
   isActive,
@@ -393,4 +491,4 @@ function TerminalCard({
       </div>
     </div>
   )
-}
+})

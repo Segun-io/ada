@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, Suspense } from "react"
 import { useNavigate, useParams } from "@tanstack/react-router"
-import { Plus, FolderOpen, Trash2, FolderPlus, GitBranch, Bot, ChevronLeft, ChevronRight } from "lucide-react"
+import { Plus, FolderOpen, FolderPlus, GitBranch, Bot, ChevronLeft, ChevronRight } from "lucide-react"
 import { open as openDialog } from "@tauri-apps/plugin-dialog"
 import { readDir, exists } from "@tauri-apps/plugin-fs"
 import { useSuspenseQuery, useQuery, useQueryClient } from "@tanstack/react-query"
@@ -27,7 +27,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { ConfirmationDialog } from "@/components/confirmation-dialog"
 import {
   projectsQueryOptions,
   projectQueryOptions,
@@ -35,10 +34,9 @@ import {
   clientsQueryOptions,
   useCreateProject,
   useOpenProject,
-  useDeleteProject,
   useUpdateProjectSettings,
 } from "@/lib/queries"
-import { useTerminalUIStore } from "@/stores/terminal-ui-store"
+import { useSidebarCollapsed, useTerminalUIStore } from "@/stores/terminal-ui-store"
 import type { ProjectSummary } from "@/lib/types"
 
 export function ProjectSidebar() {
@@ -50,7 +48,7 @@ export function ProjectSidebar() {
 }
 
 function ProjectSidebarSkeleton() {
-  const { sidebarCollapsed } = useTerminalUIStore()
+  const sidebarCollapsed = useSidebarCollapsed()
 
   return (
     <div className={`${sidebarCollapsed ? "w-12" : "w-52"} border-r border-border flex flex-col bg-background transition-all duration-200`}>
@@ -71,16 +69,12 @@ function ProjectSidebarContent() {
   const currentProjectId = (params as { projectId?: string }).projectId
 
   const { data: projects } = useSuspenseQuery(projectsQueryOptions())
-  const deleteProjectMutation = useDeleteProject()
 
-  const { sidebarCollapsed, setSidebarCollapsed } = useTerminalUIStore()
+  // Use selectors for minimal re-renders
+  const sidebarCollapsed = useSidebarCollapsed()
+  const setSidebarCollapsed = useTerminalUIStore((state) => state.setSidebarCollapsed)
 
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false)
-  const [deleteConfirmation, setDeleteConfirmation] = useState<{ open: boolean; projectId: string; projectName: string }>({
-    open: false,
-    projectId: "",
-    projectName: "",
-  })
 
   const handleSelectProject = (projectId: string) => {
     navigate({ to: "/project/$projectId", params: { projectId } })
@@ -92,41 +86,8 @@ function ProjectSidebarContent() {
     queryClient.prefetchQuery(terminalsQueryOptions(projectId))
   }
 
-  const handleDeleteProject = (projectId: string) => {
-    deleteProjectMutation.mutate(projectId, {
-      onSuccess: () => {
-        if (projectId === currentProjectId) {
-          navigate({ to: "/" })
-        }
-      },
-    })
-  }
-
-  const handleDeleteClick = (project: ProjectSummary, shiftKey: boolean) => {
-    if (shiftKey) {
-      // Shift+click bypasses confirmation
-      handleDeleteProject(project.id)
-    } else {
-      // Show confirmation dialog
-      setDeleteConfirmation({
-        open: true,
-        projectId: project.id,
-        projectName: project.name,
-      })
-    }
-  }
-
-  const confirmDelete = () => {
-    handleDeleteProject(deleteConfirmation.projectId)
-    setDeleteConfirmation({ open: false, projectId: "", projectName: "" })
-  }
-
-  const cancelDelete = () => {
-    setDeleteConfirmation({ open: false, projectId: "", projectName: "" })
-  }
-
   return (
-    <div className={`${sidebarCollapsed ? "w-12" : "w-52"} border-r border-border flex flex-col bg-background transition-all duration-200`}>
+    <div className={`${sidebarCollapsed ? "w-12" : "w-52"} border-r border-border flex flex-col bg-background transition-all duration-200 select-none`}>
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-3 border-b border-border">
         {!sidebarCollapsed && <span className="font-semibold text-lg">ada</span>}
@@ -169,7 +130,6 @@ function ProjectSidebarContent() {
                 isCollapsed={sidebarCollapsed}
                 onSelect={() => handleSelectProject(project.id)}
                 onHover={() => handleProjectHover(project.id)}
-                onDelete={(shiftKey) => handleDeleteClick(project, shiftKey)}
               />
             ))
           )}
@@ -191,17 +151,6 @@ function ProjectSidebarContent() {
         </div>
       )}
 
-      {/* Delete Confirmation Dialog */}
-      <ConfirmationDialog
-        open={deleteConfirmation.open}
-        title="Delete Project"
-        description={`Are you sure you want to delete "${deleteConfirmation.projectName}"? This will remove it from Ada but won't delete any files on disk.`}
-        confirmText="Delete"
-        variant="destructive"
-        onConfirm={confirmDelete}
-        onCancel={cancelDelete}
-      />
-
       {/* Create Project Dialog */}
       <CreateProjectDialog
         open={isCreateDialogOpen}
@@ -221,16 +170,15 @@ interface ProjectItemProps {
   isCollapsed: boolean
   onSelect: () => void
   onHover: () => void
-  onDelete: (shiftKey: boolean) => void
 }
 
-function ProjectItem({ project, isSelected, isCollapsed, onSelect, onHover, onDelete }: ProjectItemProps) {
+function ProjectItem({ project, isSelected, isCollapsed, onSelect, onHover }: ProjectItemProps) {
   if (isCollapsed) {
     return (
       <button
         onClick={onSelect}
         onMouseEnter={onHover}
-        className={`group w-full flex items-center justify-center py-2 text-sm transition-colors border-b border-border/50 hover:bg-accent/50 ${
+        className={`w-full flex items-center justify-center py-2 text-sm transition-colors border-b border-border/50 hover:bg-accent/50 cursor-pointer ${
           isSelected ? "bg-accent" : ""
         }`}
         title={project.name}
@@ -243,29 +191,15 @@ function ProjectItem({ project, isSelected, isCollapsed, onSelect, onHover, onDe
   }
 
   return (
-    <div
-      className={`group relative w-full flex items-center text-left px-4 py-2 text-sm transition-colors border-b border-border/50 hover:bg-accent/50 ${
+    <button
+      onClick={onSelect}
+      onMouseEnter={onHover}
+      className={`w-full text-left px-4 py-2 text-sm transition-colors border-b border-border/50 hover:bg-accent/50 truncate cursor-pointer ${
         isSelected ? "bg-accent" : ""
       }`}
     >
-      <button
-        onClick={onSelect}
-        onMouseEnter={onHover}
-        className="flex-1 text-left truncate"
-      >
-        {project.name}
-      </button>
-      <button
-        onClick={(e) => {
-          e.stopPropagation()
-          onDelete(e.shiftKey)
-        }}
-        className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded hover:bg-destructive/10 text-destructive"
-        title="Delete project (Shift+click to skip confirmation)"
-      >
-        <Trash2 className="h-3.5 w-3.5" />
-      </button>
-    </div>
+      {project.name}
+    </button>
   )
 }
 
@@ -284,7 +218,7 @@ interface CreateProjectDialogProps {
 }
 
 function CreateProjectDialog({ open, onOpenChange, onCreated }: CreateProjectDialogProps) {
-  const [error, setError] = useState<string | null>(null)
+  // Path validation state (async validation with Tauri FS APIs)
   const [pathWarning, setPathWarning] = useState<string | null>(null)
   const [isValidatingPath, setIsValidatingPath] = useState(false)
 
@@ -296,6 +230,9 @@ function CreateProjectDialog({ open, onOpenChange, onCreated }: CreateProjectDia
   const openProjectMutation = useOpenProject()
   const updateSettingsMutation = useUpdateProjectSettings()
 
+  // Combined mutation error for display
+  const mutationError = createProjectMutation.error || openProjectMutation.error
+
   const getDefaultValues = useCallback((): CreateProjectFormValues => ({
     activeTab: "new",
     newPath: "",
@@ -304,67 +241,40 @@ function CreateProjectDialog({ open, onOpenChange, onCreated }: CreateProjectDia
     defaultClient: "",
   }), [])
 
+  // Helper to set default client after project creation/opening
+  const applyDefaultClient = async (projectId: string, clientId: string) => {
+    try {
+      await updateSettingsMutation.mutateAsync({
+        project_id: projectId,
+        default_client: clientId,
+        auto_create_worktree: false,
+        worktree_base_path: null,
+      })
+    } catch {
+      // Settings update failed, but we still want to navigate
+    }
+  }
+
   const form = useForm({
     defaultValues: getDefaultValues(),
-    onSubmit: ({ value }) => {
-      setError(null)
-
+    onSubmit: async ({ value }) => {
+      let project
       if (value.activeTab === "new") {
         if (!value.newPath || pathWarning) return
-
-        createProjectMutation.mutate(
-          { path: value.newPath, initGit: value.initGit },
-          {
-            onSuccess: (project) => {
-              if (value.defaultClient) {
-                updateSettingsMutation.mutate(
-                  {
-                    project_id: project.id,
-                    default_client: value.defaultClient,
-                    auto_create_worktree: false,
-                    worktree_base_path: null,
-                  },
-                  {
-                    onSuccess: () => onCreated(project.id),
-                    onError: () => onCreated(project.id), // Still navigate even if settings fail
-                  }
-                )
-              } else {
-                onCreated(project.id)
-              }
-            },
-            onError: (err) => {
-              setError(String(err))
-            },
-          }
-        )
+        project = await createProjectMutation.mutateAsync({
+          path: value.newPath,
+          initGit: value.initGit,
+        })
       } else {
         if (!value.existingPath) return
-
-        openProjectMutation.mutate(value.existingPath, {
-          onSuccess: (project) => {
-            if (value.defaultClient) {
-              updateSettingsMutation.mutate(
-                {
-                  project_id: project.id,
-                  default_client: value.defaultClient,
-                  auto_create_worktree: false,
-                  worktree_base_path: null,
-                },
-                {
-                  onSuccess: () => onCreated(project.id),
-                  onError: () => onCreated(project.id), // Still navigate even if settings fail
-                }
-              )
-            } else {
-              onCreated(project.id)
-            }
-          },
-          onError: (err) => {
-            setError(String(err))
-          },
-        })
+        project = await openProjectMutation.mutateAsync(value.existingPath)
       }
+
+      if (value.defaultClient) {
+        await applyDefaultClient(project.id, value.defaultClient)
+      }
+
+      onCreated(project.id)
     },
   })
 
@@ -393,15 +303,18 @@ function CreateProjectDialog({ open, onOpenChange, onCreated }: CreateProjectDia
     }
   }, [])
 
-  // Reset form when dialog opens
+  // Reset form and mutations when dialog opens
   useEffect(() => {
     if (open) {
       form.reset(getDefaultValues())
-      setError(null)
       setPathWarning(null)
       setIsValidatingPath(false)
+      // Reset mutations to clear any previous errors
+      createProjectMutation.reset()
+      openProjectMutation.reset()
     }
-  }, [open, form, getDefaultValues])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only reset when dialog opens
+  }, [open])
 
   // Validate new path with debounce
   useEffect(() => {
@@ -467,8 +380,9 @@ function CreateProjectDialog({ open, onOpenChange, onCreated }: CreateProjectDia
                 value={tabField.state.value}
                 onValueChange={(v) => {
                   tabField.handleChange(v as "new" | "existing")
-                  setError(null)
                   setPathWarning(null)
+                  createProjectMutation.reset()
+                  openProjectMutation.reset()
                 }}
               >
                 <TabsList className="grid w-full grid-cols-2">
@@ -594,9 +508,9 @@ function CreateProjectDialog({ open, onOpenChange, onCreated }: CreateProjectDia
             )}
           </form.Field>
 
-          {error && (
+          {mutationError && (
             <div className="rounded-md bg-destructive/10 border border-destructive/20 p-3 mt-4">
-              <p className="text-sm text-destructive">{error}</p>
+              <p className="text-sm text-destructive">{String(mutationError)}</p>
             </div>
           )}
 

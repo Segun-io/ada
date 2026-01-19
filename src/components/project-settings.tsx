@@ -1,5 +1,6 @@
-import { useEffect, useCallback } from "react"
+import { useEffect, useCallback, useState } from "react"
 import { useForm } from "@tanstack/react-form"
+import { Trash2 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import {
@@ -18,7 +19,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { useUpdateProjectSettings } from "@/lib/queries"
+import { ConfirmationDialog } from "@/components/confirmation-dialog"
+import { useUpdateProjectSettings, useDeleteProject } from "@/lib/queries"
 import type { AdaProject, ClientSummary } from "@/lib/types"
 
 interface ProjectSettingsFormValues {
@@ -31,6 +33,7 @@ interface ProjectSettingsProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   onSaved: (project: AdaProject) => void
+  onDeleted: () => void
 }
 
 export function ProjectSettings({
@@ -39,8 +42,11 @@ export function ProjectSettings({
   open,
   onOpenChange,
   onSaved,
+  onDeleted,
 }: ProjectSettingsProps) {
   const updateSettingsMutation = useUpdateProjectSettings()
+  const deleteProjectMutation = useDeleteProject()
+  const [deleteConfirmation, setDeleteConfirmation] = useState(false)
 
   const getDefaultValues = useCallback((): ProjectSettingsFormValues => ({
     defaultClient: project.settings.default_client || "",
@@ -48,38 +54,46 @@ export function ProjectSettings({
 
   const form = useForm({
     defaultValues: getDefaultValues(),
-    onSubmit: ({ value }) => {
-      updateSettingsMutation.mutate(
-        {
-          project_id: project.id,
-          default_client: value.defaultClient || null,
-          auto_create_worktree: project.settings.auto_create_worktree,
-          worktree_base_path: project.settings.worktree_base_path,
-        },
-        {
-          onSuccess: (updatedProject) => {
-            onSaved(updatedProject)
-            onOpenChange(false)
-          },
-          onError: (error) => {
-            console.error("Failed to save settings:", error)
-          },
-        }
-      )
+    onSubmit: async ({ value }) => {
+      const updatedProject = await updateSettingsMutation.mutateAsync({
+        project_id: project.id,
+        default_client: value.defaultClient || null,
+        auto_create_worktree: project.settings.auto_create_worktree,
+        worktree_base_path: project.settings.worktree_base_path,
+      })
+      onSaved(updatedProject)
+      onOpenChange(false)
     },
   })
 
-  // Reset form when dialog opens or project changes
+  // Reset form and mutation state when dialog opens
   useEffect(() => {
     if (open) {
       form.reset(getDefaultValues())
+      updateSettingsMutation.reset()
+      deleteProjectMutation.reset()
     }
-  }, [open, form, getDefaultValues])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only reset when dialog opens
+  }, [open])
+
+  // Wrap onOpenChange to reset delete confirmation when closing
+  const handleOpenChange = (isOpen: boolean) => {
+    if (!isOpen) {
+      setDeleteConfirmation(false)
+    }
+    onOpenChange(isOpen)
+  }
+
+  const handleDelete = async () => {
+    await deleteProjectMutation.mutateAsync(project.id)
+    onOpenChange(false)
+    onDeleted()
+  }
 
   const installedClients = clients.filter((c) => c.installed)
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent className="sm:max-w-[500px]">
         <DialogHeader>
           <DialogTitle>Project Settings</DialogTitle>
@@ -145,10 +159,41 @@ export function ProjectSettings({
                 </p>
               </div>
             )}
+
+            {/* Error Display */}
+            {(updateSettingsMutation.error || deleteProjectMutation.error) && (
+              <div className="rounded-md bg-destructive/10 border border-destructive/20 p-3">
+                <p className="text-sm text-destructive">
+                  {String(updateSettingsMutation.error || deleteProjectMutation.error)}
+                </p>
+              </div>
+            )}
+
+            {/* Danger Zone */}
+            <div className="border-t border-destructive/20 pt-4 mt-2">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="text-sm font-medium text-destructive">Delete Project</h3>
+                  <p className="text-xs text-muted-foreground">
+                    Remove from Ada. Files on disk won't be deleted.
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  variant="destructive"
+                  size="sm"
+                  onClick={() => setDeleteConfirmation(true)}
+                  disabled={deleteProjectMutation.isPending}
+                >
+                  <Trash2 className="h-4 w-4 mr-1" />
+                  Delete
+                </Button>
+              </div>
+            </div>
           </div>
 
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+            <Button type="button" variant="outline" onClick={() => handleOpenChange(false)}>
               Cancel
             </Button>
             <form.Subscribe selector={(state) => state.isSubmitting}>
@@ -160,6 +205,17 @@ export function ProjectSettings({
             </form.Subscribe>
           </DialogFooter>
         </form>
+
+        {/* Delete Confirmation Dialog */}
+        <ConfirmationDialog
+          open={deleteConfirmation}
+          title="Delete Project"
+          description={`Are you sure you want to delete "${project.name}"? This will remove it from Ada but won't delete any files on disk.`}
+          confirmText="Delete"
+          variant="destructive"
+          onConfirm={handleDelete}
+          onCancel={() => setDeleteConfirmation(false)}
+        />
       </DialogContent>
     </Dialog>
   )

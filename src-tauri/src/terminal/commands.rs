@@ -438,11 +438,15 @@ pub async fn restart_terminal(
             .ok_or_else(|| Error::ClientNotFound(terminal.client_id.clone()))?
     };
 
-    // Get or create output buffer
-    let output_buffer = {
-        let buffers = state.output_buffers.read();
-        buffers.get(&terminal_id).cloned()
-    }.unwrap_or_else(|| Arc::new(TerminalOutputBuffer::new()));
+    // Kill existing PTY if running (allows restart of both stopped and running terminals)
+    {
+        let mut pty_handles = state.pty_handles.write();
+        pty_handles.remove(&terminal_id);
+        // PTY handle is dropped here, which closes file descriptors and sends SIGHUP
+    }
+
+    // Create fresh output buffer (clears history for clean restart)
+    let output_buffer = Arc::new(TerminalOutputBuffer::new());
 
     // Spawn new PTY
     let pty_handle = spawn_pty(

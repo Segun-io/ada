@@ -3,10 +3,11 @@ import { Terminal } from "@xterm/xterm"
 import { FitAddon } from "@xterm/addon-fit"
 import { WebLinksAddon } from "@xterm/addon-web-links"
 import { SearchAddon } from "@xterm/addon-search"
-import { listen } from "@tauri-apps/api/event"
-import { Search, X, ChevronUp, ChevronDown, RotateCcw, RefreshCw, XCircle, Home, FolderOpen, TreeDeciduous, Terminal as TerminalIcon } from "lucide-react"
+import { Search, X, ChevronUp, ChevronDown, RotateCcw, RefreshCw, XCircle, Terminal as TerminalIcon } from "lucide-react"
 
-import { useTerminalUIStore } from "@/stores/terminal-ui-store"
+import { useTerminalOutput } from "@/lib/tauri-events"
+import { terminalApi } from "@/lib/api"
+import { useMarkTerminalStopped } from "@/lib/queries"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import {
@@ -18,39 +19,8 @@ import {
 } from "@/components/ui/select"
 import { ConfirmationDialog } from "@/components/confirmation-dialog"
 import { cn } from "@/lib/utils"
-import type { TerminalOutput, TerminalInfo, ClientSummary, AgentActivity, TerminalMode } from "@/lib/types"
-
-// Get mode display info
-const getModeInfo = (mode: TerminalMode) => {
-  switch (mode) {
-    case "main":
-      return { icon: Home, color: "text-purple-400", bgColor: "bg-purple-500/20", label: "main" }
-    case "folder":
-      return { icon: FolderOpen, color: "text-orange-400", bgColor: "bg-orange-500/20", label: "folder" }
-    case "current_branch":
-      return { icon: TerminalIcon, color: "text-green-400", bgColor: "bg-green-500/20", label: "main" }
-    case "worktree":
-      return { icon: TreeDeciduous, color: "text-blue-400", bgColor: "bg-blue-500/20", label: "worktree" }
-    default:
-      return { icon: TerminalIcon, color: "text-muted-foreground", bgColor: "bg-muted", label: mode }
-  }
-}
-
-// Get border color based on activity
-const getActivityBorderClass = (activity: AgentActivity, status?: string) => {
-  if (status === "stopped") return "border-yellow-500/50"
-  switch (activity) {
-    case "running":
-      return "border-blue-500/50"
-    case "waiting_for_user":
-      return "border-orange-500 animate-pulse"
-    case "done":
-      return "border-green-500/50"
-    case "idle":
-    default:
-      return "border-gray-500/50"
-  }
-}
+import { getModeInfo, getActivityBorderClass } from "@/lib/terminal-utils"
+import type { TerminalInfo, ClientSummary, AgentActivity } from "@/lib/types"
 
 interface TerminalViewProps {
   terminalId: string
@@ -78,8 +48,14 @@ export function TerminalView({
   const fitAddonRef = useRef<FitAddon | null>(null)
   const searchAddonRef = useRef<SearchAddon | null>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
+  const writtenCountRef = useRef(0)
+  const inputHandlerAttached = useRef(false)
 
-  const { writeToTerminal, terminalOutputs } = useTerminalUIStore()
+  // Mutation to mark terminal as stopped when PTY is dead
+  const { mutate: markStopped } = useMarkTerminalStopped()
+
+  // Get terminal output (auto-fetches history on first load, live updates via events)
+  const terminalOutput = useTerminalOutput(terminalId)
 
   const [isSearchOpen, setIsSearchOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState("")
@@ -167,11 +143,11 @@ export function TerminalView({
     xtermRef.current = terminal
     fitAddonRef.current = fitAddon
     searchAddonRef.current = searchAddon
+    inputHandlerAttached.current = false
 
-    // Handle user input
-    terminal.onData((data) => {
-      writeToTerminal(terminalId, data).catch(console.error)
-    })
+    // Note: onData handler is attached AFTER history is loaded (in output effect)
+    // This prevents xterm.js escape sequence responses during history replay
+    // from being sent to the PTY
 
     // Handle resize
     const resizeObserver = new ResizeObserver(() => {
@@ -182,11 +158,8 @@ export function TerminalView({
 
     resizeObserver.observe(terminalRef.current)
 
-    // Write any existing output
-    const existingOutput = terminalOutputs[terminalId]
-    if (existingOutput) {
-      existingOutput.forEach((data) => terminal.write(data))
-    }
+    // Reset written count when terminal changes
+    writtenCountRef.current = 0
 
     return () => {
       resizeObserver.disconnect()
@@ -194,21 +167,58 @@ export function TerminalView({
       xtermRef.current = null
       fitAddonRef.current = null
       searchAddonRef.current = null
-    }
-  }, [terminalId, writeToTerminal])
-
-  // Listen for terminal output
-  useEffect(() => {
-    const unlisten = listen<TerminalOutput>("terminal-output", (event) => {
-      if (event.payload.terminal_id === terminalId && xtermRef.current) {
-        xtermRef.current.write(event.payload.data)
-      }
-    })
-
-    return () => {
-      unlisten.then((fn) => fn())
+      writtenCountRef.current = 0
+      inputHandlerAttached.current = false
     }
   }, [terminalId])
+
+  // Attach input handler to terminal (must be done after initial history load)
+  const attachInputHandler = useCallback(() => {
+    if (!xtermRef.current || inputHandlerAttached.current) return
+
+    xtermRef.current.onData((data) => {
+      terminalApi.write(terminalId, data).catch((err) => {
+        const errorMsg = String(err)
+        // If we get an I/O error, the PTY is dead - mark terminal as stopped
+        if (errorMsg.includes("Input/output error") || errorMsg.includes("os error 5")) {
+          console.warn("Terminal PTY is dead, marking as stopped:", terminalId)
+          markStopped(terminalId)
+        } else {
+          console.error("Terminal write error:", err)
+        }
+      })
+    })
+    inputHandlerAttached.current = true
+  }, [terminalId, markStopped])
+
+  // Write terminal output incrementally (handles both history and live updates)
+  useEffect(() => {
+    if (!xtermRef.current) return
+
+    // Detect if output was cleared (e.g., after restart)
+    if (terminalOutput.length < writtenCountRef.current) {
+      // Clear xterm display and reset counter
+      xtermRef.current.clear()
+      writtenCountRef.current = 0
+      inputHandlerAttached.current = false
+    }
+
+    if (terminalOutput.length === 0) {
+      // No history yet, but still attach handler so user can type
+      attachInputHandler()
+      return
+    }
+
+    // Write only new output that hasn't been written yet
+    const newItems = terminalOutput.slice(writtenCountRef.current)
+    if (newItems.length > 0) {
+      newItems.forEach((data) => xtermRef.current?.write(data))
+      writtenCountRef.current = terminalOutput.length
+    }
+
+    // Attach input handler after history is written
+    attachInputHandler()
+  }, [terminalOutput, attachInputHandler])
 
   const handleSearch = useCallback((query: string) => {
     setSearchQuery(query)
@@ -296,19 +306,33 @@ export function TerminalView({
           <span className="text-muted-foreground">{getContextInfo()}</span>
         </div>
 
-        {/* Right: Close Button (hidden for main terminal) */}
-        {!isMain && onClose && (
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-6 w-6 text-muted-foreground hover:text-foreground"
-            onClick={handleClose}
-            title="Close terminal (Shift+click to skip confirmation)"
-          >
-            <X className="h-3.5 w-3.5" />
-          </Button>
-        )}
-        {isMain && <div className="w-6" />}
+        {/* Right: Actions */}
+        <div className="flex items-center gap-1">
+          {/* Restart Button */}
+          {onRestart && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6 text-muted-foreground hover:text-foreground"
+              onClick={onRestart}
+              title="Restart terminal (clears history)"
+            >
+              <RotateCcw className="h-3.5 w-3.5" />
+            </Button>
+          )}
+          {/* Close Button (hidden for main terminal) */}
+          {!isMain && onClose && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6 text-muted-foreground hover:text-foreground"
+              onClick={handleClose}
+              title="Close terminal (Shift+click to skip confirmation)"
+            >
+              <X className="h-3.5 w-3.5" />
+            </Button>
+          )}
+        </div>
       </div>
 
       {/* Terminal Content */}
@@ -377,31 +401,42 @@ export function TerminalView({
                 </div>
                 <h3 className="font-semibold text-lg">Agent Stopped</h3>
                 <p className="text-sm text-muted-foreground mt-1">
-                  The agent process has exited. What would you like to do?
+                  The agent process has exited.
                 </p>
               </div>
 
               <div className="space-y-3">
                 {/* Restart with same agent */}
-                <Button
-                  variant="default"
-                  className="w-full"
-                  onClick={onRestart}
-                >
-                  <RotateCcw className="h-4 w-4 mr-2" />
-                  Restart Agent
-                </Button>
+                {(() => {
+                  const currentClient = clients.find(c => c.id === terminal?.client_id)
+                  return (
+                    <div className="space-y-2">
+                      <Button
+                        variant="default"
+                        className="w-full"
+                        onClick={onRestart}
+                      >
+                        <RotateCcw className="h-4 w-4 mr-2" />
+                        Restart {currentClient?.name || "Agent"}
+                      </Button>
+                      <p className="text-xs text-muted-foreground text-center">
+                        Starts fresh session (history cleared)
+                      </p>
+                    </div>
+                  )
+                })()}
 
                 {/* Switch agent */}
                 {clients.length > 1 && onSwitchAgent && (
-                  <div className="space-y-2">
+                  <div className="space-y-2 pt-2 border-t border-border">
+                    <p className="text-xs text-muted-foreground">Or switch to a different agent:</p>
                     <div className="flex gap-2">
                       <Select
                         value={selectedNewAgent}
                         onValueChange={setSelectedNewAgent}
                       >
                         <SelectTrigger className="flex-1">
-                          <SelectValue placeholder="Select different agent" />
+                          <SelectValue placeholder="Select agent..." />
                         </SelectTrigger>
                         <SelectContent>
                           {clients
@@ -430,10 +465,10 @@ export function TerminalView({
                 )}
 
                 {/* Close terminal (not for main) */}
-                {!isMain && (
+                {!isMain && onClose && (
                   <Button
-                    variant="outline"
-                    className="w-full text-destructive hover:text-destructive"
+                    variant="ghost"
+                    className="w-full text-muted-foreground hover:text-destructive"
                     onClick={onClose}
                   >
                     <X className="h-4 w-4 mr-2" />
