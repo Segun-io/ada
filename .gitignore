@@ -48,3 +48,6 @@ coverage
 *.tsbuildinfo
 # Ada worktrees
 .worktrees/
+
+# prettier
+.prettierrc
