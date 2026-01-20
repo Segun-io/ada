@@ -36,6 +36,25 @@ impl ClientConfig {
         self.installed = common_paths.iter().any(|p| p.exists());
     }
 
+    /// Get the full path to the command executable
+    /// This is needed because macOS GUI apps don't inherit shell PATH
+    pub fn get_command_path(&self) -> PathBuf {
+        // First try which (uses PATH)
+        if let Ok(path) = which::which(&self.command) {
+            return path;
+        }
+
+        // Fallback: check common installation paths
+        for path in self.get_common_paths() {
+            if path.exists() {
+                return path;
+            }
+        }
+
+        // Last resort: return the command as-is (will likely fail)
+        PathBuf::from(&self.command)
+    }
+
     fn get_common_paths(&self) -> Vec<PathBuf> {
         let home = dirs::home_dir().unwrap_or_default();
 

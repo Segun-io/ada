@@ -19,7 +19,7 @@ pub fn spawn_pty(
     output_buffer: Arc<TerminalOutputBuffer>,
 ) -> Result<PtyHandle> {
     let pty_system = NativePtySystem::default();
-    
+
     let pair = pty_system
         .openpty(PtySize {
             rows,
@@ -28,12 +28,44 @@ pub fn spawn_pty(
             pixel_height: 0,
         })
         .map_err(|e| Error::TerminalError(e.to_string()))?;
-    
-    let mut cmd = CommandBuilder::new(&client.command);
+
+    // Use full path to command (macOS GUI apps don't inherit shell PATH)
+    let command_path = client.get_command_path();
+    let mut cmd = CommandBuilder::new(&command_path);
     cmd.args(&client.args);
     cmd.cwd(working_dir);
-    
-    // Set environment variables
+
+    // Set up proper PATH environment for the PTY
+    // This ensures child processes can find common tools
+    if let Some(home) = dirs::home_dir() {
+        let path_dirs = vec![
+            home.join(".local/bin"),
+            home.join(".cargo/bin"),
+            home.join(".bun/bin"),
+            std::path::PathBuf::from("/opt/homebrew/bin"),
+            std::path::PathBuf::from("/opt/homebrew/sbin"),
+            std::path::PathBuf::from("/usr/local/bin"),
+            std::path::PathBuf::from("/usr/bin"),
+            std::path::PathBuf::from("/bin"),
+            std::path::PathBuf::from("/usr/sbin"),
+            std::path::PathBuf::from("/sbin"),
+        ];
+
+        let path_value: String = path_dirs
+            .iter()
+            .filter(|p| p.exists())
+            .map(|p| p.to_string_lossy().to_string())
+            .collect::<Vec<_>>()
+            .join(":");
+
+        cmd.env("PATH", &path_value);
+        cmd.env("HOME", home.to_string_lossy().to_string());
+    }
+
+    // Set TERM for proper terminal emulation
+    cmd.env("TERM", "xterm-256color");
+
+    // Set environment variables from client config
     for (key, value) in &client.env {
         cmd.env(key, value);
     }
