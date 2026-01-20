@@ -23,6 +23,9 @@ bun run tauri:dev
 # Build for production
 bun run tauri:build
 
+# Build signed for distribution (macOS)
+bun run tauri:build:signed
+
 # Frontend only
 bun run dev          # Vite dev server on :5173
 bun run build        # TypeScript check + Vite build
@@ -71,3 +74,22 @@ cargo test
 ## Path Aliases
 
 TypeScript uses `@/*` → `./src/*` path alias.
+
+## Building for Distribution (macOS)
+
+Use the signed build script to create a distributable DMG:
+
+```bash
+bun run tauri:build:signed
+```
+
+This runs `scripts/build-signed.sh` which:
+1. Builds the Tauri app in release mode
+2. Ad-hoc signs the .app bundle with `codesign`
+3. Recreates the DMG with the signed app
+
+**Output locations:**
+- App: `src-tauri/target/release/bundle/macos/Ada.app`
+- DMG: `src-tauri/target/release/bundle/dmg/Ada_<version>_<arch>.dmg`
+
+**Note:** Ad-hoc signing removes "app is damaged" errors but recipients may still need to right-click → Open on first launch, or run `xattr -cr /Applications/Ada.app`. For full Gatekeeper clearance without warnings, you need an Apple Developer certificate ($99/year) and notarization.

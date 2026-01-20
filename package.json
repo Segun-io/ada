@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:build": "tauri build",
+    "tauri:build:signed": "./scripts/build-signed.sh"
   },
   "dependencies": {
     "@radix-ui/react-alert-dialog": "^1.1.15",

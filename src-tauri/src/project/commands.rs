@@ -348,7 +348,34 @@ pub async fn delete_project(
         return Err(Error::ProjectNotFound(project_id));
     }
 
-    // Delete persisted file
+    // Clean up terminals associated with this project
+    let terminal_ids_to_remove: Vec<String> = {
+        let terminals = state.terminals.read();
+        terminals
+            .iter()
+            .filter(|(_, t)| t.project_id == project_id)
+            .map(|(id, _)| id.clone())
+            .collect()
+    };
+
+    for terminal_id in &terminal_ids_to_remove {
+        // Remove PTY handle (will stop the process)
+        state.pty_handles.write().remove(terminal_id);
+        // Remove output buffer
+        state.output_buffers.write().remove(terminal_id);
+        // Remove terminal from state
+        state.terminals.write().remove(terminal_id);
+        // Delete terminal file
+        let _ = state.delete_terminal_file(terminal_id);
+    }
+
+    eprintln!(
+        "[Ada] Deleted project {} and {} associated terminals",
+        project_id,
+        terminal_ids_to_remove.len()
+    );
+
+    // Delete persisted project file
     state.delete_project_file(&project_id)?;
 
     Ok(())

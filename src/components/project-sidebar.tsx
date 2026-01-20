@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, Suspense, useEffect } from "react"
 import { useNavigate, useParams } from "@tanstack/react-router"
-import { Plus, FolderOpen, FolderPlus, GitBranch, Bot, ChevronLeft, ChevronRight } from "lucide-react"
+import { Plus, FolderOpen, FolderPlus, GitBranch, Bot, ChevronLeft, ChevronRight, Trash2, Settings } from "lucide-react"
 import { open as openDialog } from "@tauri-apps/plugin-dialog"
 import { readDir, exists } from "@tauri-apps/plugin-fs"
 import { useSuspenseQuery, useQuery, useQueryClient } from "@tanstack/react-query"
@@ -16,6 +16,14 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu"
+import { ConfirmationDialog } from "@/components/confirmation-dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
@@ -35,6 +43,7 @@ import {
   useCreateProject,
   useOpenProject,
   useUpdateProjectSettings,
+  useDeleteProject,
 } from "@/lib/queries"
 import { useSidebarCollapsed, useTerminalUIStore } from "@/stores/terminal-ui-store"
 import { useProjectUnseenCount } from "@/lib/tauri-events"
@@ -77,6 +86,12 @@ function ProjectSidebarContent() {
   const setSidebarCollapsed = useTerminalUIStore((state) => state.setSidebarCollapsed)
 
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false)
+  const [deleteConfirmation, setDeleteConfirmation] = useState<{ open: boolean; project: ProjectSummary | null }>({
+    open: false,
+    project: null,
+  })
+
+  const deleteProjectMutation = useDeleteProject()
 
   const handleSelectProject = (projectId: string) => {
     navigate({ to: "/project/$projectId", params: { projectId } })
@@ -87,6 +102,23 @@ function ProjectSidebarContent() {
     queryClient.prefetchQuery(projectQueryOptions(projectId))
     queryClient.prefetchQuery(terminalsQueryOptions(projectId))
   }
+
+  const handleDeleteProject = useCallback((project: ProjectSummary) => {
+    setDeleteConfirmation({ open: true, project })
+  }, [])
+
+  const confirmDeleteProject = useCallback(async () => {
+    if (!deleteConfirmation.project) return
+
+    const projectId = deleteConfirmation.project.id
+    await deleteProjectMutation.mutateAsync(projectId)
+    setDeleteConfirmation({ open: false, project: null })
+
+    // If we deleted the currently selected project, navigate away
+    if (currentProjectId === projectId) {
+      navigate({ to: "/" })
+    }
+  }, [deleteConfirmation.project, deleteProjectMutation, currentProjectId, navigate])
 
   return (
     <div className={`${sidebarCollapsed ? "w-12" : "w-52"} border-r border-border flex flex-col bg-background transition-all duration-200 select-none`}>
@@ -132,6 +164,7 @@ function ProjectSidebarContent() {
                 isCollapsed={sidebarCollapsed}
                 onSelect={() => handleSelectProject(project.id)}
                 onHover={() => handleProjectHover(project.id)}
+                onDelete={() => handleDeleteProject(project)}
               />
             ))
           )}
@@ -162,6 +195,17 @@ function ProjectSidebarContent() {
           navigate({ to: "/project/$projectId", params: { projectId } })
         }}
       />
+
+      {/* Delete Project Confirmation */}
+      <ConfirmationDialog
+        open={deleteConfirmation.open}
+        title="Delete Project"
+        description={`Are you sure you want to delete "${deleteConfirmation.project?.name}"? This will remove it from Ada but won't delete any files on disk.`}
+        confirmText="Delete"
+        variant="destructive"
+        onConfirm={confirmDeleteProject}
+        onCancel={() => setDeleteConfirmation({ open: false, project: null })}
+      />
     </div>
   )
 }
@@ -172,9 +216,10 @@ interface ProjectItemProps {
   isCollapsed: boolean
   onSelect: () => void
   onHover: () => void
+  onDelete: () => void
 }
 
-function ProjectItem({ project, isSelected, isCollapsed, onSelect, onHover }: ProjectItemProps) {
+function ProjectItem({ project, isSelected, isCollapsed, onSelect, onHover, onDelete }: ProjectItemProps) {
   // Fetch terminals - registration happens automatically in queryFn
   useQuery(terminalsQueryOptions(project.id))
 
@@ -183,35 +228,65 @@ function ProjectItem({ project, isSelected, isCollapsed, onSelect, onHover }: Pr
 
   if (isCollapsed) {
     return (
-      <button
-        onClick={onSelect}
-        onMouseEnter={onHover}
-        className={`w-full flex items-center justify-center py-2 text-sm transition-colors border-b border-border/50 hover:bg-accent/50 cursor-pointer relative ${
-          isSelected ? "bg-accent" : ""
-        }`}
-        title={project.name}
-      >
-        <span className="w-6 h-6 rounded bg-muted flex items-center justify-center text-xs font-medium">
-          {project.name.charAt(0).toUpperCase()}
-        </span>
-        {unseenCount > 0 && (
-          <AttentionBadge count={unseenCount} className="absolute -top-0.5 -right-0.5" />
-        )}
-      </button>
+      <ContextMenu>
+        <ContextMenuTrigger asChild>
+          <button
+            onClick={onSelect}
+            onMouseEnter={onHover}
+            className={`w-full flex items-center justify-center py-2 text-sm transition-colors border-b border-border/50 hover:bg-accent/50 cursor-pointer relative ${
+              isSelected ? "bg-accent" : ""
+            }`}
+            title={project.name}
+          >
+            <span className="w-6 h-6 rounded bg-muted flex items-center justify-center text-xs font-medium">
+              {project.name.charAt(0).toUpperCase()}
+            </span>
+            {unseenCount > 0 && (
+              <AttentionBadge count={unseenCount} className="absolute -top-0.5 -right-0.5" />
+            )}
+          </button>
+        </ContextMenuTrigger>
+        <ContextMenuContent>
+          <ContextMenuItem onClick={onSelect}>
+            <Settings className="mr-2 h-4 w-4" />
+            Open Project
+          </ContextMenuItem>
+          <ContextMenuSeparator />
+          <ContextMenuItem onClick={onDelete} className="text-destructive focus:text-destructive">
+            <Trash2 className="mr-2 h-4 w-4" />
+            Delete Project
+          </ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
     )
   }
 
   return (
-    <button
-      onClick={onSelect}
-      onMouseEnter={onHover}
-      className={`w-full text-left px-4 py-2 text-sm transition-colors border-b border-border/50 hover:bg-accent/50 cursor-pointer flex items-center justify-between ${
-        isSelected ? "bg-accent" : ""
-      }`}
-    >
-      <span className="truncate">{project.name}</span>
-      {unseenCount > 0 && <AttentionBadge count={unseenCount} />}
-    </button>
+    <ContextMenu>
+      <ContextMenuTrigger asChild>
+        <button
+          onClick={onSelect}
+          onMouseEnter={onHover}
+          className={`w-full text-left px-4 py-2 text-sm transition-colors border-b border-border/50 hover:bg-accent/50 cursor-pointer flex items-center justify-between ${
+            isSelected ? "bg-accent" : ""
+          }`}
+        >
+          <span className="truncate">{project.name}</span>
+          {unseenCount > 0 && <AttentionBadge count={unseenCount} />}
+        </button>
+      </ContextMenuTrigger>
+      <ContextMenuContent>
+        <ContextMenuItem onClick={onSelect}>
+          <Settings className="mr-2 h-4 w-4" />
+          Open Project
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        <ContextMenuItem onClick={onDelete} className="text-destructive focus:text-destructive">
+          <Trash2 className="mr-2 h-4 w-4" />
+          Delete Project
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
   )
 }
 

@@ -1,5 +1,5 @@
-import { useState, useCallback, memo } from "react"
-import { Plus, X, RotateCcw, Home, Bot, Circle } from "lucide-react"
+import { useState, useCallback, memo, useEffect } from "react"
+import { Plus, X, RotateCcw, Home, Bot, Circle, AlertCircle } from "lucide-react"
 import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area"
 import { Button } from "@/components/ui/button"
 import {
@@ -270,6 +270,21 @@ const MainTerminalCard = memo(function MainTerminalCard({
   const hasAgent = !!defaultClientId
   const isStopped = mainTerminal?.status === "stopped"
 
+  // Track how long we've been waiting for terminal creation
+  const [initializingTooLong, setInitializingTooLong] = useState(false)
+
+  // If we have an agent but no terminal, start a timer
+  useEffect(() => {
+    if (hasAgent && !mainTerminal) {
+      setInitializingTooLong(false)
+      const timer = setTimeout(() => {
+        setInitializingTooLong(true)
+      }, 8000) // Show error state after 8 seconds
+      return () => clearTimeout(timer)
+    }
+    setInitializingTooLong(false)
+  }, [hasAgent, mainTerminal])
+
   // If no agent selected, show selection state
   if (!hasAgent) {
     return (
@@ -310,8 +325,47 @@ const MainTerminalCard = memo(function MainTerminalCard({
     )
   }
 
-  // Agent selected but main terminal not yet created - show initializing state
+  // Agent selected but main terminal not yet created - show initializing or error state
   if (!mainTerminal) {
+    // Show error state if initialization is taking too long
+    if (initializingTooLong) {
+      return (
+        <div
+          className={cn(
+            "group relative flex-shrink-0 w-36 h-28 rounded-xl transition-all",
+            isActive && "ring-2 ring-primary ring-offset-2 ring-offset-background"
+          )}
+        >
+          <div className="h-full rounded-xl bg-[#1a1a1a] border-2 border-yellow-500/50 flex flex-col items-center justify-center overflow-hidden relative">
+            {/* Mode indicator badge */}
+            <div className="absolute top-1 left-1 flex items-center gap-0.5 px-1 py-0.5 rounded text-[8px] font-medium bg-purple-500/20 text-purple-400">
+              <Home className="h-2 w-2" />
+              main
+            </div>
+
+            <AlertCircle className="h-4 w-4 text-yellow-500 mb-1" />
+            <span className="text-[8px] text-yellow-500">Failed to start</span>
+            <span className="text-[7px] text-muted-foreground mt-0.5">Check agent installation</span>
+
+            {/* Retry button */}
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-5 text-[8px] mt-1 px-2"
+              onClick={() => {
+                // Re-selecting the same client will trigger re-creation
+                onSelectClient(defaultClientId)
+              }}
+            >
+              <RotateCcw className="h-2.5 w-2.5 mr-1" />
+              Retry
+            </Button>
+          </div>
+        </div>
+      )
+    }
+
+    // Show initializing state
     return (
       <div
         className={cn(
