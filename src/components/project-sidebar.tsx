@@ -8,34 +8,13 @@ import { useForm } from "@tanstack/react-form"
 
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog"
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
-import {
-  projectsQueryOptions,
-  projectQueryOptions,
-  terminalsQueryOptions,
-  clientsQueryOptions,
-  useCreateProject,
-  useOpenProject,
-  useUpdateProjectSettings,
-} from "@/lib/queries"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { projectsQueryOptions, projectQueryOptions, terminalsQueryOptions, clientsQueryOptions, useCreateProject, useOpenProject, useUpdateProjectSettings } from "@/lib/queries"
 import { useSidebarCollapsed, useTerminalUIStore } from "@/stores/terminal-ui-store"
 import { useProjectUnseenCount } from "@/lib/tauri-events"
 import { AttentionBadge } from "@/components/attention-badge"
@@ -54,9 +33,7 @@ function ProjectSidebarSkeleton() {
 
   return (
     <div className={`${sidebarCollapsed ? "w-12" : "w-52"} border-r border-border flex flex-col bg-background transition-all duration-200`}>
-      <div className="flex items-center justify-between px-3 py-3 border-b border-border">
-        {!sidebarCollapsed && <span className="font-semibold text-lg">ada</span>}
-      </div>
+      <div className="flex items-center justify-between px-3 py-3 border-b border-border">{!sidebarCollapsed && <span className="font-semibold text-lg">ada</span>}</div>
       <div className="flex-1 flex items-center justify-center">
         <div className="animate-spin rounded-full border-2 border-muted border-t-primary h-6 w-6" />
       </div>
@@ -93,17 +70,8 @@ function ProjectSidebarContent() {
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-3 border-b border-border">
         {!sidebarCollapsed && <span className="font-semibold text-lg">ada</span>}
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-7 w-7"
-          onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
-        >
-          {sidebarCollapsed ? (
-            <ChevronRight className="h-4 w-4" />
-          ) : (
-            <ChevronLeft className="h-4 w-4" />
-          )}
+        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setSidebarCollapsed(!sidebarCollapsed)}>
+          {sidebarCollapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
         </Button>
       </div>
 
@@ -113,12 +81,7 @@ function ProjectSidebarContent() {
           {projects.length === 0 ? (
             <div className={`${sidebarCollapsed ? "px-2" : "px-4"} py-8 text-center text-sm text-muted-foreground`}>
               {!sidebarCollapsed && <p className="mb-3">No projects yet</p>}
-              <Button
-                variant="outline"
-                size={sidebarCollapsed ? "icon" : "sm"}
-                onClick={() => setIsCreateDialogOpen(true)}
-                className={sidebarCollapsed ? "h-8 w-8" : ""}
-              >
+              <Button variant="outline" size={sidebarCollapsed ? "icon" : "sm"} onClick={() => setIsCreateDialogOpen(true)} className={sidebarCollapsed ? "h-8 w-8" : ""}>
                 <Plus className={sidebarCollapsed ? "h-4 w-4" : "mr-2 h-3 w-3"} />
                 {!sidebarCollapsed && "Add Project"}
               </Button>
@@ -159,7 +122,12 @@ function ProjectSidebarContent() {
         onOpenChange={setIsCreateDialogOpen}
         onCreated={(projectId) => {
           setIsCreateDialogOpen(false)
-          navigate({ to: "/project/$projectId", params: { projectId } })
+          navigate({
+            to: "/project/$projectId",
+            params: {
+              projectId,
+            },
+          })
         }}
       />
     </div>
@@ -186,17 +154,11 @@ function ProjectItem({ project, isSelected, isCollapsed, onSelect, onHover }: Pr
       <button
         onClick={onSelect}
         onMouseEnter={onHover}
-        className={`w-full flex items-center justify-center py-2 text-sm transition-colors border-b border-border/50 hover:bg-accent/50 cursor-pointer relative ${
-          isSelected ? "bg-accent" : ""
-        }`}
+        className={`w-full flex items-center justify-center py-2 text-sm transition-colors border-b border-border/50 hover:bg-accent/50 cursor-pointer relative ${isSelected ? "bg-accent" : ""}`}
         title={project.name}
       >
-        <span className="w-6 h-6 rounded bg-muted flex items-center justify-center text-xs font-medium">
-          {project.name.charAt(0).toUpperCase()}
-        </span>
-        {unseenCount > 0 && (
-          <AttentionBadge count={unseenCount} className="absolute -top-0.5 -right-0.5" />
-        )}
+        <span className="w-6 h-6 rounded bg-muted flex items-center justify-center text-xs font-medium">{project.name.charAt(0).toUpperCase()}</span>
+        {unseenCount > 0 && <AttentionBadge count={unseenCount} className="absolute -top-0.5 -right-0.5" />}
       </button>
     )
   }
@@ -205,9 +167,7 @@ function ProjectItem({ project, isSelected, isCollapsed, onSelect, onHover }: Pr
     <button
       onClick={onSelect}
       onMouseEnter={onHover}
-      className={`w-full text-left px-4 py-2 text-sm transition-colors border-b border-border/50 hover:bg-accent/50 cursor-pointer flex items-center justify-between ${
-        isSelected ? "bg-accent" : ""
-      }`}
+      className={`w-full text-left px-4 py-2 text-sm transition-colors border-b border-border/50 hover:bg-accent/50 cursor-pointer flex items-center justify-between ${isSelected ? "bg-accent" : ""}`}
     >
       <span className="truncate">{project.name}</span>
       {unseenCount > 0 && <AttentionBadge count={unseenCount} />}
@@ -231,6 +191,9 @@ interface CreateProjectDialogProps {
 
 function CreateProjectDialog({ open, onOpenChange, onCreated }: CreateProjectDialogProps) {
   // Path validation state (async validation with Tauri FS APIs)
+
+  const validationSeq = useRef(0)
+
   const [pathWarning, setPathWarning] = useState<string | null>(null)
   const [isValidatingPath, setIsValidatingPath] = useState(false)
 
@@ -245,13 +208,16 @@ function CreateProjectDialog({ open, onOpenChange, onCreated }: CreateProjectDia
   // Combined mutation error for display
   const mutationError = createProjectMutation.error || openProjectMutation.error
 
-  const getDefaultValues = useCallback((): CreateProjectFormValues => ({
-    activeTab: "new",
-    newPath: "",
-    initGit: true,
-    existingPath: "",
-    defaultClient: "",
-  }), [])
+  const getDefaultValues = useCallback(
+    (): CreateProjectFormValues => ({
+      activeTab: "new",
+      newPath: "",
+      initGit: true,
+      existingPath: "",
+      defaultClient: "",
+    }),
+    []
+  )
 
   // Helper to set default client after project creation/opening
   const applyDefaultClient = async (projectId: string, clientId: string) => {
@@ -294,8 +260,11 @@ function CreateProjectDialog({ open, onOpenChange, onCreated }: CreateProjectDia
   const wasOpenRef = useRef(false)
 
   const validateNewPath = useCallback(async (path: string) => {
+    const mySeq = ++validationSeq.current
+
     if (!path) {
       setPathWarning(null)
+      setIsValidatingPath(false)
       return
     }
 
@@ -304,16 +273,29 @@ function CreateProjectDialog({ open, onOpenChange, onCreated }: CreateProjectDia
 
     try {
       const pathExists = await exists(path)
+
+      if (mySeq !== validationSeq.current) return
+
       if (pathExists) {
         const entries = await readDir(path)
+
+        if (mySeq !== validationSeq.current) return
+
         if (entries.length > 0) {
           setPathWarning("This folder is not empty. Please choose an empty folder or a new location.")
+        } else {
+          setPathWarning(null)
         }
+      } else {
+        setPathWarning(null)
       }
     } catch {
-      // Path doesn't exist or can't be read - that's fine for new projects
+      if (mySeq !== validationSeq.current) return
+      setPathWarning(null)
     } finally {
-      setIsValidatingPath(false)
+      if (mySeq === validationSeq.current) {
+        setIsValidatingPath(false)
+      }
     }
   }, [])
 
@@ -330,20 +312,7 @@ function CreateProjectDialog({ open, onOpenChange, onCreated }: CreateProjectDia
     wasOpenRef.current = open
   }, [open, form, getDefaultValues, createProjectMutation, openProjectMutation])
 
-  // Validate new path with debounce
-  useEffect(() => {
-    const activeTab = form.state.values.activeTab
-    const newPath = form.state.values.newPath
-
-    if (activeTab === "new" && newPath) {
-      const timeoutId = setTimeout(() => {
-        validateNewPath(newPath)
-      }, 300)
-      return () => clearTimeout(timeoutId)
-    } else {
-      setPathWarning(null)
-    }
-  }, [form.state.values.activeTab, form.state.values.newPath, validateNewPath])
+  const skipNextDebounce = useRef(false)
 
   const handleBrowseNew = async () => {
     const selected = await openDialog({
@@ -351,11 +320,34 @@ function CreateProjectDialog({ open, onOpenChange, onCreated }: CreateProjectDia
       multiple: false,
       title: "Select Location for New Project",
     })
+    if (!selected) return
 
-    if (selected) {
-      form.setFieldValue("newPath", selected)
-    }
+    form.setFieldValue("newPath", selected)
+
+    setPathWarning(null)
+    setIsValidatingPath(true)
+
+    skipNextDebounce.current = true
+    validateNewPath(selected)
   }
+
+  useEffect(() => {
+    const activeTab = form.state.values.activeTab
+    const newPath = form.state.values.newPath
+
+    if (skipNextDebounce.current) {
+      skipNextDebounce.current = false
+      return
+    }
+
+    if (activeTab === "new" && newPath) {
+      const timeoutId = setTimeout(() => validateNewPath(newPath), 300)
+      return () => clearTimeout(timeoutId)
+    } else {
+      setPathWarning(null)
+      setIsValidatingPath(false)
+    }
+  }, [form.state.values.activeTab, form.state.values.newPath, validateNewPath])
 
   const handleBrowseExisting = async () => {
     const selected = await openDialog({
@@ -376,9 +368,7 @@ function CreateProjectDialog({ open, onOpenChange, onCreated }: CreateProjectDia
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>Add Project</DialogTitle>
-          <DialogDescription>
-            Create a new project or open an existing folder.
-          </DialogDescription>
+          <DialogDescription>Create a new project or open an existing folder.</DialogDescription>
         </DialogHeader>
 
         <form
@@ -428,9 +418,7 @@ function CreateProjectDialog({ open, onOpenChange, onCreated }: CreateProjectDia
                             Browse
                           </Button>
                         </div>
-                        {pathWarning && (
-                          <p className="text-xs text-amber-600">{pathWarning}</p>
-                        )}
+                        {pathWarning && <p className="text-xs text-amber-600">{pathWarning}</p>}
                       </div>
                     )}
                   </form.Field>
@@ -441,19 +429,15 @@ function CreateProjectDialog({ open, onOpenChange, onCreated }: CreateProjectDia
                         <div className="space-y-0.5">
                           <div className="flex items-center gap-2">
                             <GitBranch className="h-4 w-4 text-muted-foreground" />
-                            <Label htmlFor="init-git" className="font-medium">Initialize Git Repository</Label>
+                            <Label htmlFor="init-git" className="font-medium">
+                              Initialize Git Repository
+                            </Label>
                           </div>
                           <p className="text-xs text-muted-foreground">
-                            {field.state.value
-                              ? "Creates a git repo with an initial commit and worktree support."
-                              : "No version control. You can add git later."}
+                            {field.state.value ? "Creates a git repo with an initial commit and worktree support." : "No version control. You can add git later."}
                           </p>
                         </div>
-                        <Switch
-                          id="init-git"
-                          checked={field.state.value}
-                          onCheckedChange={field.handleChange}
-                        />
+                        <Switch id="init-git" checked={field.state.value} onCheckedChange={field.handleChange} />
                       </div>
                     )}
                   </form.Field>
@@ -477,9 +461,7 @@ function CreateProjectDialog({ open, onOpenChange, onCreated }: CreateProjectDia
                             Browse
                           </Button>
                         </div>
-                        <p className="text-xs text-muted-foreground">
-                          Opens any folder as a project. If it's a git repository, Ada will configure worktree support automatically.
-                        </p>
+                        <p className="text-xs text-muted-foreground">Opens any folder as a project. If it's a git repository, Ada will configure worktree support automatically.</p>
                       </div>
                     )}
                   </form.Field>
@@ -499,25 +481,25 @@ function CreateProjectDialog({ open, onOpenChange, onCreated }: CreateProjectDia
                       {field.state.value && (
                         <span className="flex items-center gap-2">
                           <Bot className="h-4 w-4" />
-                          {clients.find(c => c.id === field.state.value)?.name}
+                          {clients.find((c) => c.id === field.state.value)?.name}
                         </span>
                       )}
                     </SelectValue>
                   </SelectTrigger>
                   <SelectContent>
-                    {clients.filter(c => c.installed).map((client) => (
-                      <SelectItem key={client.id} value={client.id}>
-                        <span className="flex items-center gap-2">
-                          <Bot className="h-4 w-4" />
-                          {client.name}
-                        </span>
-                      </SelectItem>
-                    ))}
+                    {clients
+                      .filter((c) => c.installed)
+                      .map((client) => (
+                        <SelectItem key={client.id} value={client.id}>
+                          <span className="flex items-center gap-2">
+                            <Bot className="h-4 w-4" />
+                            {client.name}
+                          </span>
+                        </SelectItem>
+                      ))}
                   </SelectContent>
                 </Select>
-                <p className="text-xs text-muted-foreground">
-                  The AI client to use when creating new terminals in this project.
-                </p>
+                <p className="text-xs text-muted-foreground">The AI client to use when creating new terminals in this project.</p>
               </div>
             )}
           </form.Field>
@@ -541,20 +523,19 @@ function CreateProjectDialog({ open, onOpenChange, onCreated }: CreateProjectDia
               })}
             >
               {({ activeTab, newPath, existingPath, isSubmitting }) => {
-                const canSubmit = activeTab === "new"
-                  ? newPath && !pathWarning && !isValidatingPath
-                  : existingPath
+                const canSubmit = activeTab === "new" ? Boolean(newPath) && !pathWarning && !isValidatingPath : Boolean(existingPath)
 
                 return (
                   <Button type="submit" disabled={!canSubmit || isSubmitting || isPending}>
                     {isPending
-                      ? activeTab === "new" ? "Creating..." : "Opening..."
+                      ? activeTab === "new"
+                        ? "Creating..."
+                        : "Opening..."
                       : isValidatingPath
                         ? "Validating..."
                         : activeTab === "new"
                           ? "Create Project"
-                          : "Open Project"
-                    }
+                          : "Open Project"}
                   </Button>
                 )
               }}
