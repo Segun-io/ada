@@ -128,7 +128,6 @@ function ProjectIndexPage() {
         defaultClientId={currentProject.settings.default_client}
         onSelectTerminal={() => {}}
         onCloseTerminal={() => {}}
-        onRestartTerminal={() => {}}
         onNewTerminal={() => {}}
         onSelectDefaultClient={handleSelectDefaultClient}
       />

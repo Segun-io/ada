@@ -38,6 +38,13 @@ export interface CreateProjectRequest {
 // Terminal types
 export type TerminalStatus = "starting" | "running" | "stopped" | "error"
 export type TerminalMode = "main" | "folder" | "current_branch" | "worktree"
+export type AgentStatus = "idle" | "working" | "permission" | "review"
+
+export interface CommandSpec {
+  command: string
+  args: string[]
+  env: Record<string, string>
+}
 
 export interface TerminalInfo {
   id: string
@@ -49,6 +56,9 @@ export interface TerminalInfo {
   worktree_path: string | null
   status: TerminalStatus
   created_at: string
+  command: CommandSpec
+  shell: string | null
+  agent_status: AgentStatus
   mode: TerminalMode
   is_main: boolean
   folder_path: string | null
@@ -109,4 +119,36 @@ export interface ClientSummary {
   client_type: ClientType
   description: string
   installed: boolean
+}
+
+// Runtime config
+export interface RuntimeConfig {
+  ada_home: string
+  data_dir: string
+  daemon_port: number
+  notification_port: number
+  shell_override: string | null
+}
+
+// Daemon types
+export type ConnectionState = "connected" | "disconnected" | "notRunning" | "connecting"
+
+export interface DaemonStatusInfo {
+  running: boolean
+  connected: boolean
+  pid: number | null
+  port: number | null
+  uptimeSecs: number | null
+  sessionCount: number | null
+  version: string | null
+}
+
+// CLI installation types
+export interface CliInstallStatus {
+  installed: boolean
+  installPath: string | null
+  bundledPath: string | null
+  upToDate: boolean
+  /** Whether installation is available (false in dev mode unless ADA_ALLOW_DEV_INSTALL=1) */
+  canInstall: boolean
 }

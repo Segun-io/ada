@@ -17,6 +17,7 @@ export {
   useCreateMainTerminal,
   useCloseTerminal,
   useRestartTerminal,
+  useReconnectTerminal,
   useMarkTerminalStopped,
   useSwitchTerminalAgent,
   useWriteTerminal,
@@ -37,3 +38,9 @@ export {
   useCreateWorktree,
   useRemoveWorktree,
 } from "./git"
+
+// Runtime query options & mutations
+export {
+  runtimeConfigQueryOptions,
+  useSetShellOverride,
+} from "./runtime"

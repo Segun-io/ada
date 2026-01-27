@@ -1,21 +1,13 @@
 import { queryOptions, useMutation, useQueryClient } from "@tanstack/react-query"
 import { terminalApi } from "../api"
 import { queryKeys } from "../query-client"
-import { unseenStore } from "@/stores/unseen-store"
 import type { CreateTerminalRequest } from "../types"
 
 // Query Options
 export const terminalsQueryOptions = (projectId: string) =>
   queryOptions({
     queryKey: queryKeys.terminals.list(projectId),
-    queryFn: async () => {
-      const terminals = await terminalApi.list(projectId)
-      // Register terminals with unseen store for O(1) lookups
-      unseenStore.registerTerminals(
-        terminals.map((t) => ({ id: t.id, project_id: t.project_id }))
-      )
-      return terminals
-    },
+    queryFn: () => terminalApi.list(projectId),
     enabled: !!projectId,
   })
 
@@ -40,9 +32,6 @@ export function useCreateTerminal() {
   return useMutation({
     mutationFn: (request: CreateTerminalRequest) => terminalApi.create(request),
     onSuccess: (newTerminal) => {
-      // Register new terminal with unseen store immediately
-      unseenStore.registerTerminal(newTerminal.id, newTerminal.project_id)
-
       queryClient.invalidateQueries({
         queryKey: queryKeys.terminals.list(newTerminal.project_id),
       })
@@ -60,9 +49,6 @@ export function useCreateMainTerminal() {
     mutationFn: ({ projectId, clientId }: { projectId: string; clientId: string }) =>
       terminalApi.createMain(projectId, clientId),
     onSuccess: (newTerminal) => {
-      // Register new terminal with unseen store immediately
-      unseenStore.registerTerminal(newTerminal.id, newTerminal.project_id)
-
       queryClient.invalidateQueries({
         queryKey: queryKeys.terminals.list(newTerminal.project_id),
       })
@@ -99,20 +85,15 @@ export function useCloseTerminal() {
         }
       )
 
-      // Unregister from unseen store
-      unseenStore.unregisterTerminal(terminalId)
-
       return { previousTerminals }
     },
-    onError: (_err, { projectId, terminalId }, context) => {
+    onError: (_err, { projectId }, context) => {
       // Rollback on error
       if (context?.previousTerminals) {
         queryClient.setQueryData(
           queryKeys.terminals.list(projectId),
           context.previousTerminals
         )
-        // Re-register if rollback
-        unseenStore.registerTerminal(terminalId, projectId)
       }
     },
     onSettled: (_, __, { projectId }) => {
@@ -151,6 +132,79 @@ export function useRestartTerminal() {
       queryClient.invalidateQueries({
         queryKey: queryKeys.terminals.list(updatedTerminal.project_id),
       })
+    },
+  })
+}
+
+/**
+ * Reconnect a terminal that lost its PTY connection.
+ * Unlike restart, this preserves the terminal output history.
+ * Use this for automatic recovery when PTY is not running.
+ */
+export function useReconnectTerminal() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async (terminalId: string) => {
+      console.log(
+        `%c[RECONNECT MUTATION]%c Calling terminalApi.restart`,
+        "background: #8b5cf6; color: white; padding: 2px 6px; border-radius: 3px;",
+        "",
+        terminalId
+      )
+
+      // Add timeout to prevent hanging forever if daemon dies
+      const timeoutMs = 15000
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error("Reconnect timed out after 15s")), timeoutMs)
+      })
+
+      try {
+        const result = await Promise.race([
+          terminalApi.restart(terminalId),
+          timeoutPromise,
+        ])
+        console.log(
+          `%c[RECONNECT MUTATION]%c terminalApi.restart resolved`,
+          "background: #8b5cf6; color: white; padding: 2px 6px; border-radius: 3px;",
+          "color: #22c55e;",
+          result
+        )
+        return result
+      } catch (err) {
+        console.error(
+          `%c[RECONNECT MUTATION]%c terminalApi.restart rejected/timed out`,
+          "background: #8b5cf6; color: white; padding: 2px 6px; border-radius: 3px;",
+          "color: #ef4444;",
+          err
+        )
+        throw err
+      }
+    },
+    onSuccess: (updatedTerminal) => {
+      console.log(
+        `%c[RECONNECT MUTATION]%c onSuccess`,
+        "background: #8b5cf6; color: white; padding: 2px 6px; border-radius: 3px;",
+        "color: #22c55e;",
+        updatedTerminal.id
+      )
+      // DO NOT clear terminal output - preserve history for reconnect
+      // Just update terminal detail and status
+      queryClient.setQueryData(
+        queryKeys.terminals.detail(updatedTerminal.id),
+        updatedTerminal
+      )
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.terminals.list(updatedTerminal.project_id),
+      })
+    },
+    onError: (err) => {
+      console.error(
+        `%c[RECONNECT MUTATION]%c onError`,
+        "background: #8b5cf6; color: white; padding: 2px 6px; border-radius: 3px;",
+        "color: #ef4444;",
+        err
+      )
     },
   })
 }

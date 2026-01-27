@@ -9,6 +9,7 @@ import type {
   WorktreeInfo,
   ClientConfig,
   ClientSummary,
+  RuntimeConfig,
 } from "./types"
 
 export interface UpdateProjectSettingsRequest {
@@ -110,4 +111,12 @@ export const clientApi = {
 
   detectInstalled: (): Promise<ClientSummary[]> =>
     invoke("detect_installed_clients"),
+}
+
+// Runtime API
+export const runtimeApi = {
+  getConfig: (): Promise<RuntimeConfig> =>
+    invoke("get_runtime_config"),
+  setShellOverride: (shell: string | null): Promise<RuntimeConfig> =>
+    invoke("set_shell_override", { shell }),
 }

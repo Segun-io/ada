@@ -3,39 +3,23 @@ import { Terminal } from "@xterm/xterm"
 import { FitAddon } from "@xterm/addon-fit"
 import { WebLinksAddon } from "@xterm/addon-web-links"
 import { SearchAddon } from "@xterm/addon-search"
-import { Search, X, ChevronUp, ChevronDown, RotateCcw, RefreshCw, XCircle, Terminal as TerminalIcon } from "lucide-react"
+import { Search, X, ChevronUp, ChevronDown, RotateCcw, Terminal as TerminalIcon } from "lucide-react"
 
 import { useTerminalOutput } from "@/lib/tauri-events"
 import { terminalApi } from "@/lib/api"
-import { useMarkTerminalStopped } from "@/lib/queries"
+import { useMarkTerminalStopped, useReconnectTerminal } from "@/lib/queries"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
 import { ConfirmationDialog } from "@/components/confirmation-dialog"
 import { cn } from "@/lib/utils"
 import { getModeInfo } from "@/lib/terminal-utils"
-import type { TerminalInfo, ClientSummary, TerminalStatus } from "@/lib/types"
-
-// Get border class for terminal view based on status
-const getTerminalBorderClass = (status?: TerminalStatus): string => {
-  if (status === "stopped") return "border-yellow-500/50"
-  if (status === "running") return "border-green-500/50"
-  return "border-gray-600/50"
-}
+import type { TerminalInfo } from "@/lib/types"
 
 interface TerminalViewProps {
   terminalId: string
   terminal?: TerminalInfo
   currentBranch?: string
-  clients?: ClientSummary[]
   onRestart?: () => void
-  onSwitchAgent?: (clientId: string) => void
   onClose?: () => void
 }
 
@@ -43,9 +27,7 @@ export function TerminalView({
   terminalId,
   terminal,
   currentBranch = "",
-  clients = [],
   onRestart,
-  onSwitchAgent,
   onClose,
 }: TerminalViewProps) {
   const terminalRef = useRef<HTMLDivElement>(null)
@@ -55,9 +37,17 @@ export function TerminalView({
   const searchInputRef = useRef<HTMLInputElement>(null)
   const writtenCountRef = useRef(0)
   const inputHandlerAttached = useRef(false)
+  // Track reconnect state locally per-terminal (NOT shared isPending from React Query)
+  const isReconnectingRef = useRef(false)
+  // Track previous status to detect transitions to "stopped"
+  const prevStatusRef = useRef<string | undefined>(undefined)
 
   // Mutation to mark terminal as stopped when PTY is dead
   const { mutate: markStopped } = useMarkTerminalStopped()
+
+  // Mutation to reconnect terminal (preserves history)
+  // NOTE: Don't use isPending - it's shared across all components using this hook!
+  const { mutate: reconnect } = useReconnectTerminal()
 
   // Get terminal output (auto-fetches history on first load, live updates via events)
   const terminalOutput = useTerminalOutput(terminalId)
@@ -65,13 +55,93 @@ export function TerminalView({
   const [isSearchOpen, setIsSearchOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState("")
   const [searchResultCount, setSearchResultCount] = useState<number | null>(null)
-  const [selectedNewAgent, setSelectedNewAgent] = useState<string>("")
   const [closeConfirmation, setCloseConfirmation] = useState(false)
 
-  const isStopped = terminal?.status === "stopped"
   const isMain = terminal?.is_main ?? false
   const modeInfo = terminal ? getModeInfo(terminal.mode) : null
   const ModeIcon = modeInfo?.icon ?? TerminalIcon
+
+  // Auto-reconnect when terminal status becomes "stopped" (PTY died)
+  useEffect(() => {
+    const currentStatus = terminal?.status
+    const prevStatus = prevStatusRef.current
+
+    // Detect transition to "stopped" - reset reconnecting flag for fresh attempt
+    if (currentStatus === "stopped" && prevStatus !== "stopped") {
+      console.log(
+        `%c[TERMINAL STATUS CHANGE]%c ${prevStatus || "initial"} → stopped, resetting reconnect state`,
+        "background: #f59e0b; color: black; padding: 2px 6px; border-radius: 3px;",
+        "",
+        terminalId
+      )
+      isReconnectingRef.current = false
+    }
+
+    // Update previous status
+    prevStatusRef.current = currentStatus
+
+    const shouldReconnect = currentStatus === "stopped" && !isReconnectingRef.current
+
+    console.log(
+      `%c[TERMINAL AUTO-RECONNECT CHECK]%c`,
+      "background: #f59e0b; color: black; padding: 2px 6px; border-radius: 3px;",
+      "",
+      {
+        terminalId,
+        status: currentStatus,
+        isReconnecting: isReconnectingRef.current,
+        shouldReconnect,
+      }
+    )
+
+    if (shouldReconnect) {
+      console.warn(
+        `%c[TERMINAL AUTO-RECONNECT]%c Initiating reconnect`,
+        "background: #22c55e; color: white; padding: 2px 6px; border-radius: 3px;",
+        "",
+        terminalId
+      )
+      isReconnectingRef.current = true
+
+      // Set a timeout in case the reconnect hangs
+      const timeoutId = setTimeout(() => {
+        console.error(
+          `%c[TERMINAL AUTO-RECONNECT]%c Timeout after 10s`,
+          "background: #ef4444; color: white; padding: 2px 6px; border-radius: 3px;",
+          "color: #ef4444;",
+          terminalId
+        )
+        isReconnectingRef.current = false
+      }, 10000)
+
+      reconnect(terminalId, {
+        onSuccess: () => {
+          clearTimeout(timeoutId)
+          console.log(
+            `%c[TERMINAL AUTO-RECONNECT]%c Success`,
+            "background: #22c55e; color: white; padding: 2px 6px; border-radius: 3px;",
+            "color: #22c55e;",
+            terminalId
+          )
+          // Reset the flag after a delay to allow future reconnects if needed
+          setTimeout(() => {
+            isReconnectingRef.current = false
+          }, 5000)
+        },
+        onError: (reconnectErr) => {
+          clearTimeout(timeoutId)
+          console.error(
+            `%c[TERMINAL AUTO-RECONNECT]%c Failed`,
+            "background: #ef4444; color: white; padding: 2px 6px; border-radius: 3px;",
+            "color: #ef4444;",
+            terminalId,
+            reconnectErr
+          )
+          isReconnectingRef.current = false
+        },
+      })
+    }
+  }, [terminal?.status, terminalId, reconnect])
 
   // Get context info for header
   const getContextInfo = () => {
@@ -184,6 +254,48 @@ export function TerminalView({
     xtermRef.current.onData((data) => {
       terminalApi.write(terminalId, data).catch((err) => {
         const errorMsg = String(err)
+
+        // If PTY is not running, auto-reconnect (preserves history)
+        if (errorMsg.includes("PTY is not running")) {
+          console.log(
+            `%c[TERMINAL WRITE ERROR]%c PTY not running`,
+            "background: #ef4444; color: white; padding: 2px 6px; border-radius: 3px;",
+            "",
+            { terminalId, isReconnecting: isReconnectingRef.current }
+          )
+
+          // If already reconnecting, just wait - don't spam reconnect attempts
+          if (isReconnectingRef.current) {
+            console.log("  Reconnect already in progress, waiting...")
+            return
+          }
+
+          console.warn("  Initiating reconnect from write error handler")
+          isReconnectingRef.current = true
+          reconnect(terminalId, {
+            onSuccess: () => {
+              console.log("Terminal reconnected successfully (from write error):", terminalId)
+              setTimeout(() => {
+                isReconnectingRef.current = false
+              }, 5000)
+            },
+            onError: (reconnectErr) => {
+              console.error("Terminal reconnect failed (from write error):", reconnectErr)
+              isReconnectingRef.current = false
+              markStopped(terminalId)
+            },
+          })
+          return
+        }
+
+        // If daemon connection is closed, don't try to reconnect - daemon needs to restart first
+        if (errorMsg.includes("Daemon connection closed")) {
+          console.warn("Daemon connection closed, waiting for daemon restart:", terminalId)
+          // Reset reconnect state so we can try again after daemon restarts
+          isReconnectingRef.current = false
+          return
+        }
+
         // If we get an I/O error, the PTY is dead - mark terminal as stopped
         if (errorMsg.includes("Input/output error") || errorMsg.includes("os error 5")) {
           console.warn("Terminal PTY is dead, marking as stopped:", terminalId)
@@ -194,7 +306,7 @@ export function TerminalView({
       })
     })
     inputHandlerAttached.current = true
-  }, [terminalId, markStopped])
+  }, [terminalId, markStopped, reconnect])
 
   // Write terminal output incrementally (handles both history and live updates)
   useEffect(() => {
@@ -206,6 +318,7 @@ export function TerminalView({
       xtermRef.current.clear()
       writtenCountRef.current = 0
       inputHandlerAttached.current = false
+      isReconnectingRef.current = false
     }
 
     if (terminalOutput.length === 0) {
@@ -286,10 +399,7 @@ export function TerminalView({
   }, [isSearchOpen, closeSearch])
 
   return (
-    <div className={cn(
-      "terminal-container h-full w-full rounded-xl overflow-hidden flex flex-col border-2 transition-all duration-300",
-      getTerminalBorderClass(terminal?.status)
-    )}>
+    <div className="terminal-container h-full w-full rounded-xl overflow-hidden flex flex-col border-2 border-gray-600/50 transition-all duration-300">
       {/* Terminal Header */}
       <div className="flex items-center justify-between px-3 py-1.5 bg-[#252525] border-b border-border/50">
         {/* Left: Mode Badge */}
@@ -393,95 +503,6 @@ export function TerminalView({
             >
               <X className="h-4 w-4" />
             </Button>
-          </div>
-        )}
-
-        {/* Stopped Overlay */}
-        {isStopped && (
-          <div className="absolute inset-0 z-20 bg-black/60 flex items-center justify-center backdrop-blur-sm">
-            <div className="bg-background border border-border rounded-xl p-6 max-w-sm w-full mx-4 space-y-4">
-              <div className="text-center">
-                <div className="h-12 w-12 rounded-full bg-yellow-500/20 flex items-center justify-center mx-auto mb-3">
-                  <XCircle className="h-6 w-6 text-yellow-500" />
-                </div>
-                <h3 className="font-semibold text-lg">Agent Stopped</h3>
-                <p className="text-sm text-muted-foreground mt-1">
-                  The agent process has exited.
-                </p>
-              </div>
-
-              <div className="space-y-3">
-                {/* Restart with same agent */}
-                {(() => {
-                  const currentClient = clients.find(c => c.id === terminal?.client_id)
-                  return (
-                    <div className="space-y-2">
-                      <Button
-                        variant="default"
-                        className="w-full"
-                        onClick={onRestart}
-                      >
-                        <RotateCcw className="h-4 w-4 mr-2" />
-                        Restart {currentClient?.name || "Agent"}
-                      </Button>
-                      <p className="text-xs text-muted-foreground text-center">
-                        Starts fresh session (history cleared)
-                      </p>
-                    </div>
-                  )
-                })()}
-
-                {/* Switch agent */}
-                {clients.length > 1 && onSwitchAgent && (
-                  <div className="space-y-2 pt-2 border-t border-border">
-                    <p className="text-xs text-muted-foreground">Or switch to a different agent:</p>
-                    <div className="flex gap-2">
-                      <Select
-                        value={selectedNewAgent}
-                        onValueChange={setSelectedNewAgent}
-                      >
-                        <SelectTrigger className="flex-1">
-                          <SelectValue placeholder="Select agent..." />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {clients
-                            .filter((c) => c.id !== terminal?.client_id)
-                            .map((client) => (
-                              <SelectItem key={client.id} value={client.id}>
-                                {client.name}
-                              </SelectItem>
-                            ))}
-                        </SelectContent>
-                      </Select>
-                      <Button
-                        variant="secondary"
-                        disabled={!selectedNewAgent}
-                        onClick={() => {
-                          if (selectedNewAgent) {
-                            onSwitchAgent(selectedNewAgent)
-                            setSelectedNewAgent("")
-                          }
-                        }}
-                      >
-                        <RefreshCw className="h-4 w-4" />
-                      </Button>
-                    </div>
-                  </div>
-                )}
-
-                {/* Close terminal (not for main) */}
-                {!isMain && onClose && (
-                  <Button
-                    variant="ghost"
-                    className="w-full text-muted-foreground hover:text-destructive"
-                    onClick={onClose}
-                  >
-                    <X className="h-4 w-4 mr-2" />
-                    Close Terminal
-                  </Button>
-                )}
-              </div>
-            </div>
           </div>
         )}
 
