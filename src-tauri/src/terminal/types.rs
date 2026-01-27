@@ -1,13 +1,10 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::collections::VecDeque;
 use chrono::{DateTime, Utc};
 use parking_lot::Mutex;
 use portable_pty::MasterPty;
-
-/// Maximum number of output chunks to store per terminal
-const MAX_OUTPUT_HISTORY: usize = 1000;
 
 /// Terminal mode determines how the terminal operates
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -24,6 +21,23 @@ pub enum TerminalMode {
     Worktree,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentStatus {
+    #[default]
+    Idle,
+    Working,
+    Permission,
+    Review,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommandSpec {
+    pub command: String,
+    pub args: Vec<String>,
+    pub env: HashMap<String, String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Terminal {
     pub id: String,
@@ -35,6 +49,10 @@ pub struct Terminal {
     pub worktree_path: Option<PathBuf>,
     pub status: TerminalStatus,
     pub created_at: DateTime<Utc>,
+    pub command: CommandSpec,
+    pub shell: Option<String>,
+    #[serde(default)]
+    pub agent_status: AgentStatus,
     /// Terminal mode (Main, Folder, CurrentBranch, Worktree)
     #[serde(default)]
     pub mode: TerminalMode,
@@ -44,47 +62,6 @@ pub struct Terminal {
     /// For Folder mode: the subfolder path relative to project
     #[serde(default)]
     pub folder_path: Option<PathBuf>,
-}
-
-/// Stored terminal data for persistence
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TerminalData {
-    pub terminal: Terminal,
-    #[serde(default)]
-    pub output_history: Vec<String>,
-}
-
-/// In-memory terminal output buffer
-pub struct TerminalOutputBuffer {
-    pub buffer: Mutex<VecDeque<String>>,
-}
-
-impl TerminalOutputBuffer {
-    pub fn new() -> Self {
-        Self {
-            buffer: Mutex::new(VecDeque::with_capacity(MAX_OUTPUT_HISTORY)),
-        }
-    }
-
-    pub fn append(&self, data: String) {
-        let mut buffer = self.buffer.lock();
-        if buffer.len() >= MAX_OUTPUT_HISTORY {
-            buffer.pop_front();
-        }
-        buffer.push_back(data);
-    }
-
-    pub fn get_history(&self) -> Vec<String> {
-        self.buffer.lock().iter().cloned().collect()
-    }
-
-    pub fn restore(&self, history: Vec<String>) {
-        let mut buffer = self.buffer.lock();
-        buffer.clear();
-        for item in history.into_iter().take(MAX_OUTPUT_HISTORY) {
-            buffer.push_back(item);
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -131,6 +108,10 @@ pub struct TerminalInfo {
     pub worktree_path: Option<String>,
     pub status: TerminalStatus,
     pub created_at: DateTime<Utc>,
+    pub command: CommandSpec,
+    pub shell: Option<String>,
+    #[serde(default)]
+    pub agent_status: AgentStatus,
     pub mode: TerminalMode,
     pub is_main: bool,
     pub folder_path: Option<String>,
@@ -148,6 +129,9 @@ impl From<&Terminal> for TerminalInfo {
             worktree_path: terminal.worktree_path.as_ref().map(|p| p.to_string_lossy().to_string()),
             status: terminal.status,
             created_at: terminal.created_at,
+            command: terminal.command.clone(),
+            shell: terminal.shell.clone(),
+            agent_status: terminal.agent_status,
             mode: terminal.mode,
             is_main: terminal.is_main,
             folder_path: terminal.folder_path.as_ref().map(|p| p.to_string_lossy().to_string()),

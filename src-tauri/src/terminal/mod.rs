@@ -3,8 +3,7 @@ mod types;
 pub mod pty;
 
 pub use types::{
-    Terminal, TerminalStatus, TerminalMode, TerminalInfo,
-    CreateTerminalRequest, ResizeTerminalRequest, PtyHandle,
-    TerminalData, TerminalOutputBuffer,
+    AgentStatus, CommandSpec, Terminal, TerminalStatus, TerminalMode, TerminalInfo,
+    CreateTerminalRequest, ResizeTerminalRequest, PtyHandle, TerminalOutput,
 };
 pub use commands::create_main_terminal_internal;

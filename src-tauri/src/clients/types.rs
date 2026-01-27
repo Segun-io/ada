@@ -25,6 +25,11 @@ pub struct ClientConfig {
 
 impl ClientConfig {
     pub fn detect_installation(&mut self) {
+        if self.resolve_via_shell().is_some() {
+            self.installed = true;
+            return;
+        }
+
         // First try which (uses PATH)
         if which::which(&self.command).is_ok() {
             self.installed = true;
@@ -36,23 +41,20 @@ impl ClientConfig {
         self.installed = common_paths.iter().any(|p| p.exists());
     }
 
-    /// Get the full path to the command executable
-    /// This is needed because macOS GUI apps don't inherit shell PATH
-    pub fn get_command_path(&self) -> PathBuf {
-        // First try which (uses PATH)
-        if let Ok(path) = which::which(&self.command) {
-            return path;
+    fn resolve_via_shell(&self) -> Option<PathBuf> {
+        let shell = crate::daemon::shell::ShellConfig::detect(None);
+        let mut cmd = std::process::Command::new(&shell.path);
+        cmd.args(&shell.login_args);
+        cmd.arg("-c");
+        cmd.arg(format!("command -v {}", shell_escape(&self.command)));
+        let output = cmd.output().ok()?;
+        if !output.status.success() {
+            return None;
         }
-
-        // Fallback: check common installation paths
-        for path in self.get_common_paths() {
-            if path.exists() {
-                return path;
-            }
-        }
-
-        // Last resort: return the command as-is (will likely fail)
-        PathBuf::from(&self.command)
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .next()
+            .map(|line| PathBuf::from(line.trim()))
     }
 
     fn get_common_paths(&self) -> Vec<PathBuf> {
@@ -78,6 +80,14 @@ impl ClientConfig {
             ClientType::Custom => vec![],
         }
     }
+}
+
+fn shell_escape(input: &str) -> String {
+    if input.is_empty() {
+        return "''".to_string();
+    }
+    let escaped = input.replace('\'', r#"'\''"#);
+    format!("'{escaped}'")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

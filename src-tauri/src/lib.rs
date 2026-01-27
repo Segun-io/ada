@@ -4,15 +4,20 @@ mod git;
 mod clients;
 mod state;
 mod error;
+pub mod daemon;
+mod runtime;
+pub mod constants;
+mod util;
+pub mod cli;
 
 use state::AppState;
-use tauri::Manager;
+use tauri::{Manager, RunEvent};
 
 pub use error::{Error, Result};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
@@ -51,7 +56,34 @@ pub fn run() {
             clients::commands::list_clients,
             clients::commands::get_client,
             clients::commands::detect_installed_clients,
+            // Runtime commands
+            runtime::commands::get_runtime_config,
+            runtime::commands::set_shell_override,
+            // Daemon commands
+            daemon::tauri_commands::check_daemon_status,
+            daemon::tauri_commands::connect_to_daemon,
+            daemon::tauri_commands::start_daemon,
+            daemon::tauri_commands::get_connection_state,
+            // CLI installation commands
+            cli::install::check_cli_installed,
+            cli::install::install_cli,
+            cli::install::uninstall_cli,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(|app_handle, event| {
+        if let RunEvent::Exit = event {
+            // In dev mode, shutdown the daemon when GUI closes
+            #[cfg(debug_assertions)]
+            {
+                if let Some(state) = app_handle.try_state::<AppState>() {
+                    if let Ok(daemon) = state.get_daemon() {
+                        // Use block_on since we're in the exit handler
+                        let _ = tauri::async_runtime::block_on(daemon.shutdown());
+                    }
+                }
+            }
+        }
+    });
 }

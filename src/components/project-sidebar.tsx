@@ -46,8 +46,6 @@ import {
   useDeleteProject,
 } from "@/lib/queries"
 import { useSidebarCollapsed, useTerminalUIStore } from "@/stores/terminal-ui-store"
-import { useProjectUnseenCount } from "@/lib/tauri-events"
-import { AttentionBadge } from "@/components/attention-badge"
 import type { ProjectSummary } from "@/lib/types"
 
 export function ProjectSidebar() {
@@ -220,12 +218,6 @@ interface ProjectItemProps {
 }
 
 function ProjectItem({ project, isSelected, isCollapsed, onSelect, onHover, onDelete }: ProjectItemProps) {
-  // Fetch terminals - registration happens automatically in queryFn
-  useQuery(terminalsQueryOptions(project.id))
-
-  // Get unseen count - O(1) lookup from store
-  const unseenCount = useProjectUnseenCount(project.id)
-
   if (isCollapsed) {
     return (
       <ContextMenu>
@@ -241,9 +233,6 @@ function ProjectItem({ project, isSelected, isCollapsed, onSelect, onHover, onDe
             <span className="w-6 h-6 rounded bg-muted flex items-center justify-center text-xs font-medium">
               {project.name.charAt(0).toUpperCase()}
             </span>
-            {unseenCount > 0 && (
-              <AttentionBadge count={unseenCount} className="absolute -top-0.5 -right-0.5" />
-            )}
           </button>
         </ContextMenuTrigger>
         <ContextMenuContent>
@@ -267,12 +256,11 @@ function ProjectItem({ project, isSelected, isCollapsed, onSelect, onHover, onDe
         <button
           onClick={onSelect}
           onMouseEnter={onHover}
-          className={`w-full text-left px-4 py-2 text-sm transition-colors border-b border-border/50 hover:bg-accent/50 cursor-pointer flex items-center justify-between ${
+          className={`w-full text-left px-4 py-2 text-sm transition-colors border-b border-border/50 hover:bg-accent/50 cursor-pointer ${
             isSelected ? "bg-accent" : ""
           }`}
         >
           <span className="truncate">{project.name}</span>
-          {unseenCount > 0 && <AttentionBadge count={unseenCount} />}
         </button>
       </ContextMenuTrigger>
       <ContextMenuContent>

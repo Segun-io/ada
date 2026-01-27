@@ -41,6 +41,9 @@ Thumbs.db
 # Tauri build artifacts (handled in src-tauri/.gitignore but also here for safety)
 src-tauri/target
 
+# Tauri sidecar binaries (built via scripts/build-sidecars.sh)
+src-tauri/binaries/
+
 # Test coverage
 coverage
 

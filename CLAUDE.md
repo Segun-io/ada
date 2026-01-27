@@ -17,7 +17,7 @@ Ada is an AI Code Agent Manager - a Tauri 2 desktop application for managing mul
 ## Development Commands
 
 ```bash
-# Start development (frontend + Tauri)
+# Start development (frontend + Tauri + daemon)
 bun run tauri:dev
 
 # Build for production
@@ -33,6 +33,10 @@ bun run build        # TypeScript check + Vite build
 # Linting
 bun run lint
 
+# Sidecar binaries (ada-cli, ada-daemon)
+bun run build:sidecars        # Build with smart caching
+bun run build:sidecars:force  # Force rebuild
+
 # Rust checks (from src-tauri/)
 cargo check
 cargo build
@@ -41,13 +45,43 @@ cargo test
 
 ## Architecture
 
+Ada uses a **daemon-based architecture** for terminal management:
+
+```
+┌─────────────────┐     IPC      ┌─────────────────┐
+│   Ada Desktop   │◄────────────►│   Ada Daemon    │
+│   (Tauri App)   │              │  (Background)   │
+└─────────────────┘              └────────┬────────┘
+                                          │ PTY
+                                          ▼
+                                 ┌─────────────────┐
+                                 │  AI Agents      │
+                                 └─────────────────┘
+```
+
+### Sidecar Binaries
+
+- **ada-daemon** - Background process managing PTY sessions, persists across app restarts
+- **ada-cli** - Command-line tool for daemon management (`ada-cli daemon start/stop/status/logs`)
+
+Sidecars are built via `scripts/build-sidecars.sh` and bundled in `src-tauri/binaries/`.
+
 ### Backend (src-tauri/src/)
 
-- **state.rs** - Central `AppState` with thread-safe `RwLock<HashMap>` storage for projects, terminals, PTY handles, and clients
-- **project/** - Project CRUD operations, settings, git initialization on creation
-- **terminal/** - PTY spawning via `portable-pty`, terminal lifecycle, output buffering (max 1000 chunks)
-- **git/** - Branch management and worktree support for branch isolation
-- **clients/** - AI client configurations (Claude Code, OpenCode, Codex) with installation detection via `which`
+- **daemon/** - Daemon server, IPC protocol, PTY session management, tray icon
+  - `server.rs` - TCP server for IPC, session lifecycle
+  - `protocol.rs` - Request/response/event types for daemon communication
+  - `session.rs` - Individual PTY session management
+  - `shell.rs` - Shell/PTY spawning and I/O
+  - `tray.rs` - System tray icon and menu
+- **cli/** - CLI implementation for daemon management
+  - `daemon.rs` - start/stop/status/restart/logs commands
+  - `paths.rs` - Data directory and file path resolution
+- **state.rs** - Central `AppState` with thread-safe storage for projects, terminals, clients
+- **project/** - Project CRUD operations, settings, git initialization
+- **terminal/** - Terminal types, status enums, command specs
+- **git/** - Branch management and worktree support
+- **clients/** - AI client configurations with installation detection via `which`
 
 ### Frontend (src/)
 
@@ -59,17 +93,18 @@ cargo test
 ### Data Flow
 
 1. Frontend calls `invoke("command_name", { params })` via Tauri IPC
-2. Rust command handlers in `*/commands.rs` process requests
-3. State changes persisted to `~/.local/share/ada/` as JSON files
-4. Events emitted via `app_handle.emit()` for terminal output, status changes
+2. Tauri backend forwards terminal operations to daemon via TCP IPC
+3. Daemon manages PTY sessions and streams output back
+4. Events flow: Daemon → Tauri → Frontend via event system
+5. State persisted to `~/.local/share/ada/` (or `ada-dev/` in dev mode)
 
 ### Key Patterns
 
-- All backend operations are Tauri commands (async, return `Result<T, Error>`)
-- Terminal output streams via Tauri events (`terminal-output`, `terminal-closed`)
-- Worktrees created automatically when spawning terminals on specific branches
-- Projects must be git repos with at least one commit
-- Terminal history preserved across app restarts (PTY handles are not)
+- Daemon runs independently from the Tauri app (survives app restarts)
+- All terminal operations go through the daemon
+- IPC uses JSON-over-TCP with newline-delimited messages
+- Daemon writes PID and port files for discovery
+- Terminal history preserved in daemon even when app is closed
 
 ## Path Aliases
 
@@ -84,12 +119,19 @@ bun run tauri:build:signed
 ```
 
 This runs `scripts/build-signed.sh` which:
-1. Builds the Tauri app in release mode
-2. Ad-hoc signs the .app bundle with `codesign`
-3. Recreates the DMG with the signed app
+1. Builds sidecar binaries (ada-cli, ada-daemon)
+2. Builds the Tauri app in release mode
+3. Signs all components individually (sidecars, main binary, frameworks)
+4. Signs the .app bundle with hardened runtime
+5. Creates a DMG installer
 
 **Output locations:**
 - App: `src-tauri/target/release/bundle/macos/Ada.app`
 - DMG: `src-tauri/target/release/bundle/dmg/Ada_<version>_<arch>.dmg`
 
-**Note:** Ad-hoc signing removes "app is damaged" errors but recipients may still need to right-click → Open on first launch, or run `xattr -cr /Applications/Ada.app`. For full Gatekeeper clearance without warnings, you need an Apple Developer certificate ($99/year) and notarization.
+**Using a real certificate:**
+```bash
+CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" bun run tauri:build:signed
+```
+
+**Note:** Ad-hoc signing (default) removes "app is damaged" errors but recipients may still need to right-click → Open on first launch, or run `xattr -cr /Applications/Ada.app`. For full Gatekeeper clearance without warnings, you need an Apple Developer certificate ($99/year) and notarization.

@@ -23,6 +23,14 @@ export const queryKeys = {
     detail: (id: string) => [...queryKeys.terminals.all, "detail", id] as const,
     history: (id: string) => [...queryKeys.terminals.all, "history", id] as const,
   },
+  agents: {
+    all: ["agents"] as const,
+    status: (terminalId: string) => [...queryKeys.agents.all, "status", terminalId] as const,
+  },
+  runtime: {
+    all: ["runtime"] as const,
+    config: () => [...queryKeys.runtime.all, "config"] as const,
+  },
   clients: {
     all: ["clients"] as const,
     list: () => [...queryKeys.clients.all, "list"] as const,

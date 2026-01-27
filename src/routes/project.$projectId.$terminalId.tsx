@@ -34,10 +34,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   clearTerminalOutput,
   removeTerminalFromCache,
-  useProjectUnseenCount,
-  useMarkTerminalSeen,
 } from "@/lib/tauri-events";
-import { AttentionBadge } from "@/components/attention-badge";
 import { setLastTerminal } from "@/lib/terminal-history";
 import {
   projectQueryOptions,
@@ -132,26 +129,10 @@ function TerminalPage() {
   const [isCreateTerminalOpen, setIsCreateTerminalOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
-
   // Find terminals
   const mainTerminal = terminals.find((t) => t.is_main) || null;
   const activeTerminal =
     terminals.find((t) => t.id === terminalId) || mainTerminal;
-
-  // Track unseen count for this project - O(1) lookup from store
-  // (terminals are auto-registered when fetched via terminalsQueryOptions)
-  const unseenCount = useProjectUnseenCount(projectId);
-
-  // Mark terminal as seen when viewed
-  const markSeen = useMarkTerminalSeen();
-  const activeTerminalId = activeTerminal?.id;
-
-  // Mark the active terminal as seen when it changes
-  useEffect(() => {
-    if (activeTerminalId) {
-      markSeen(activeTerminalId);
-    }
-  }, [activeTerminalId, markSeen]);
 
   // Navigate to a terminal
   const selectTerminal = useCallback(
@@ -241,7 +222,6 @@ function TerminalPage() {
       <header className="flex items-center justify-between border-b border-border px-4 py-2">
         <div className="flex items-center gap-2">
           <span className="font-semibold text-sm">{currentProject.name}</span>
-          {unseenCount > 0 && <AttentionBadge count={unseenCount} size="md" />}
           <Button
             variant="ghost"
             size="icon"
@@ -283,11 +263,7 @@ function TerminalPage() {
             terminalId={activeTerminal.id}
             terminal={activeTerminal}
             currentBranch={currentBranch}
-            clients={clients.filter((c) => c.installed)}
             onRestart={() => handleRestartTerminal(activeTerminal.id)}
-            onSwitchAgent={(clientId) =>
-              handleSwitchAgent(activeTerminal.id, clientId)
-            }
             onClose={() => handleCloseTerminal(activeTerminal.id)}
           />
         ) : (
@@ -312,7 +288,6 @@ function TerminalPage() {
         defaultClientId={currentProject.settings.default_client}
         onSelectTerminal={selectTerminal}
         onCloseTerminal={handleCloseTerminal}
-        onRestartTerminal={handleRestartTerminal}
         onNewTerminal={handleNewTerminal}
         onSelectDefaultClient={handleSelectDefaultClient}
       />

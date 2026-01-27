@@ -4,9 +4,9 @@
   "identifier": "com.ada.agent",
   "version": "0.0.1-alpha",
   "build": {
-    "beforeDevCommand": "bun run dev",
+    "beforeDevCommand": "./scripts/dev-setup.sh && bun run dev",
     "devUrl": "http://localhost:5173",
-    "beforeBuildCommand": "bun run build",
+    "beforeBuildCommand": "./scripts/build-sidecars.sh && bun run build",
     "frontendDist": "../dist"
   },
   "app": {
@@ -29,6 +29,10 @@
   "bundle": {
     "active": true,
     "targets": ["dmg", "app"],
+    "externalBin": [
+      "binaries/ada-cli",
+      "binaries/ada-daemon"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
