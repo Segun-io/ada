@@ -396,9 +396,11 @@ fn load_tray_icon() -> Result<tray_icon::Icon, Box<dyn std::error::Error>> {
 pub fn open_main_app() {
     use std::process::Command;
 
-    // In debug mode, try to activate existing dev window via AppleScript
+    // In dev mode, try to activate existing dev window via AppleScript
     // since the dev app runs differently than the production build
-    if cfg!(debug_assertions) {
+    let dev_mode = std::env::var("ADA_DEV_MODE").map(|v| v == "1").unwrap_or(false)
+        || cfg!(debug_assertions);
+    if dev_mode {
         info!("debug mode: trying to activate existing {} dev window", APP_NAME);
 
         // Try to activate any window with the app name (dev build)

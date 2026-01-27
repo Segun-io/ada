@@ -372,6 +372,11 @@ fn spawn_daemon_process() -> Result<()> {
 
     let mut cmd = Command::new(daemon_path);
 
+    // Set dev mode for the daemon when Tauri app is in debug mode
+    if cfg!(debug_assertions) {
+        cmd.env("ADA_DEV_MODE", "1");
+    }
+
     // Forward logging environment variables to the daemon
     for var in ["ADA_LOG_LEVEL", "ADA_LOG_STDERR", "ADA_LOG_DIR", "ADA_LOG_DISABLE"] {
         if let Ok(value) = std::env::var(var) {

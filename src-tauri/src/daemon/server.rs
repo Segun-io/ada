@@ -77,6 +77,7 @@ async fn run_daemon_async(
     let ada_home = ada_home_dir();
 
     info!(
+        dev_mode = is_dev_mode(),
         data_dir = %data_dir.display(),
         ada_home = %ada_home.display(),
         "daemon async starting"
@@ -501,15 +502,21 @@ fn request_kind(request: &DaemonRequest) -> &'static str {
     }
 }
 
+/// Check if we're running in dev mode (via env var or debug build)
+fn is_dev_mode() -> bool {
+    std::env::var("ADA_DEV_MODE").map(|v| v == "1").unwrap_or(false)
+        || cfg!(debug_assertions)
+}
+
 fn daemon_data_dir() -> AdaResult<PathBuf> {
-    let dir_name = if cfg!(debug_assertions) { "ada-dev" } else { "ada" };
+    let dir_name = if is_dev_mode() { "ada-dev" } else { "ada" };
     Ok(dirs::data_dir()
         .ok_or_else(|| crate::error::Error::ConfigError("Could not find data directory".into()))?
         .join(dir_name))
 }
 
 fn ada_home_dir() -> PathBuf {
-    let dir_name = if cfg!(debug_assertions) { ".ada-dev" } else { ".ada" };
+    let dir_name = if is_dev_mode() { ".ada-dev" } else { ".ada" };
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(dir_name)
