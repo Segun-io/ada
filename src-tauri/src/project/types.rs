@@ -51,18 +51,6 @@ impl AdaProject {
             is_git_repo,
         }
     }
-    
-    pub fn add_terminal(&mut self, terminal_id: String) {
-        if !self.terminal_ids.contains(&terminal_id) {
-            self.terminal_ids.push(terminal_id);
-            self.updated_at = Utc::now();
-        }
-    }
-    
-    pub fn remove_terminal(&mut self, terminal_id: &str) {
-        self.terminal_ids.retain(|id| id != terminal_id);
-        self.updated_at = Utc::now();
-    }
 }
 
 /// Request to create a new project

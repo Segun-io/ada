@@ -285,8 +285,33 @@ pub async fn open_project(
 pub async fn list_projects(
     state: State<'_, AppState>,
 ) -> Result<Vec<ProjectSummary>> {
-    let projects = state.projects.read();
-    let summaries: Vec<ProjectSummary> = projects.values().map(|p| p.into()).collect();
+    let sessions = match state.get_daemon() {
+        Ok(daemon) => daemon.list_sessions().await.unwrap_or_default(),
+        Err(_) => Vec::new(),
+    };
+    let mut terminal_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut main_terminal_ids: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for session in sessions {
+        *terminal_counts.entry(session.project_id.clone()).or_insert(0) += 1;
+        if session.is_main {
+            main_terminal_ids.insert(session.project_id.clone(), session.id.clone());
+        }
+    }
+
+    let projects: Vec<AdaProject> = state.projects.read().values().cloned().collect();
+    let summaries: Vec<ProjectSummary> = projects
+        .iter()
+        .map(|p| ProjectSummary {
+            id: p.id.clone(),
+            name: p.name.clone(),
+            path: p.path.to_string_lossy().to_string(),
+            terminal_count: terminal_counts.get(&p.id).copied().unwrap_or(0),
+            created_at: p.created_at,
+            updated_at: p.updated_at,
+            main_terminal_id: main_terminal_ids.get(&p.id).cloned(),
+            is_git_repo: p.is_git_repo,
+        })
+        .collect();
     Ok(summaries)
 }
 
@@ -333,6 +358,26 @@ pub async fn get_project(
         }
     }
 
+    let sessions = match state.get_daemon() {
+        Ok(daemon) => daemon.list_sessions().await.unwrap_or_default(),
+        Err(_) => Vec::new(),
+    };
+    let mut terminal_ids = Vec::new();
+    let mut main_terminal_id = None;
+
+    for session in sessions {
+        if session.project_id == project_id {
+            if session.is_main {
+                main_terminal_id = Some(session.id.clone());
+            }
+            terminal_ids.push(session.id);
+        }
+    }
+
+    let mut project = project;
+    project.terminal_ids = terminal_ids;
+    project.main_terminal_id = main_terminal_id;
+
     Ok(project)
 }
 
@@ -348,31 +393,26 @@ pub async fn delete_project(
         return Err(Error::ProjectNotFound(project_id));
     }
 
-    // Clean up terminals associated with this project
-    let terminal_ids_to_remove: Vec<String> = {
-        let terminals = state.terminals.read();
-        terminals
+    // Clean up daemon sessions associated with this project
+    let mut removed_count = 0;
+    if let Ok(daemon) = state.get_daemon() {
+        let sessions = daemon.list_sessions().await.unwrap_or_default();
+        let terminal_ids_to_remove: Vec<String> = sessions
             .iter()
-            .filter(|(_, t)| t.project_id == project_id)
-            .map(|(id, _)| id.clone())
-            .collect()
-    };
+            .filter(|t| t.project_id == project_id)
+            .map(|t| t.id.clone())
+            .collect();
 
-    for terminal_id in &terminal_ids_to_remove {
-        // Remove PTY handle (will stop the process)
-        state.pty_handles.write().remove(terminal_id);
-        // Remove output buffer
-        state.output_buffers.write().remove(terminal_id);
-        // Remove terminal from state
-        state.terminals.write().remove(terminal_id);
-        // Delete terminal file
-        let _ = state.delete_terminal_file(terminal_id);
+        removed_count = terminal_ids_to_remove.len();
+        for terminal_id in &terminal_ids_to_remove {
+            let _ = daemon.close_session(terminal_id).await;
+        }
     }
 
     eprintln!(
         "[Ada] Deleted project {} and {} associated terminals",
         project_id,
-        terminal_ids_to_remove.len()
+        removed_count
     );
 
     // Delete persisted project file
@@ -416,41 +456,46 @@ pub async fn update_project_settings(
     // Auto-create main terminal if default_client is set and no main terminal exists
     if should_create_main {
         if let Some(client_id) = client_id {
-            // Check if main terminal already exists
-            let needs_main_terminal = {
-                match &updated_project.main_terminal_id {
-                    None => true,
-                    Some(main_id) => {
-                        let terminals = state.terminals.read();
-                        !terminals.contains_key(main_id)
-                    }
+            // Try to create main terminal, but don't fail if it errors
+            // (e.g., client not installed)
+            match create_main_terminal_internal(&state, &request.project_id, &client_id).await {
+                Ok(_terminal_info) => {
+                    eprintln!("[Ada] Auto-created main terminal for project {}", request.project_id);
                 }
-            };
-
-            if needs_main_terminal {
-                // Try to create main terminal, but don't fail if it errors
-                // (e.g., client not installed)
-                match create_main_terminal_internal(&state, &request.project_id, &client_id) {
-                    Ok(_terminal_info) => {
-                        eprintln!("[Ada] Auto-created main terminal for project {}", request.project_id);
-                    }
-                    Err(e) => {
-                        eprintln!("[Ada] Failed to auto-create main terminal: {}", e);
-                        // Don't propagate error - settings were still updated successfully
-                    }
+                Err(e) => {
+                    eprintln!("[Ada] Failed to auto-create main terminal: {}", e);
+                    // Don't propagate error - settings were still updated successfully
                 }
             }
         }
     }
 
     // Re-read project to get updated main_terminal_id if it was created
-    let final_project = {
+    let mut final_project = {
         let projects = state.projects.read();
         projects
             .get(&request.project_id)
             .cloned()
             .unwrap_or(updated_project)
     };
+
+    let sessions = match state.get_daemon() {
+        Ok(daemon) => daemon.list_sessions().await.unwrap_or_default(),
+        Err(_) => Vec::new(),
+    };
+    let mut terminal_ids = Vec::new();
+    let mut main_terminal_id = None;
+    for session in sessions {
+        if session.project_id == request.project_id {
+            if session.is_main {
+                main_terminal_id = Some(session.id.clone());
+            }
+            terminal_ids.push(session.id);
+        }
+    }
+
+    final_project.terminal_ids = terminal_ids;
+    final_project.main_terminal_id = main_terminal_id;
 
     Ok(final_project)
 }
