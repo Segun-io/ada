@@ -11,7 +11,9 @@
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
-    "tauri:build:signed": "./scripts/build-signed.sh"
+    "tauri:build:signed": "./scripts/build-signed.sh",
+    "build:sidecars": "./scripts/build-sidecars.sh",
+    "build:sidecars:force": "./scripts/build-sidecars.sh --force"
   },
   "dependencies": {
     "@radix-ui/react-alert-dialog": "^1.1.15",
