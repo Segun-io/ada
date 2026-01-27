@@ -19,8 +19,11 @@ BUNDLE_DIR="$PROJECT_ROOT/src-tauri/target/release/bundle"
 APP_PATH="$BUNDLE_DIR/macos/Ada.app"
 DMG_DIR="$BUNDLE_DIR/dmg"
 
-echo "==> Building Tauri app..."
+echo "==> Building sidecar binaries (ada-cli, ada-daemon)..."
 cd "$PROJECT_ROOT"
+./scripts/build-sidecars.sh
+
+echo "==> Building Tauri app..."
 bun run tauri:build
 
 echo "==> Signing app bundle (ad-hoc)..."
